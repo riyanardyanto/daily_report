@@ -91,13 +91,21 @@ poetry run python main.py
 
 Pastikan `uv` dan `pyinstaller` tersedia di environment Python Anda.
 
-Jalankan perintah berikut untuk menghasilkan file `.exe`:
+Karena aplikasi ini memakai Flet Desktop, binary client-nya (`flet.exe` + DLL) harus ikut dibundle. Jika tidak, saat EXE dijalankan Flet akan mencoba download client dari internet dan bisa gagal (contoh error `getaddrinfo failed`).
+
+### Opsi A (disarankan): build pakai spec
 
 ```powershell
-uv run pyinstaller --clean --onefile --windowed --name "test-app" --icon "src\assets\c5_spa.ico" --add-data "src\assets;src\assets" main.py
+uv run pyinstaller --clean "Daily Report.spec"
 ```
 
-Hasil build biasanya ada di folder `dist/` dengan nama `test-app.exe`.
+### Opsi B: build langsung dari `main.py` (manual)
+
+```powershell
+uv run pyinstaller --clean --onefile --windowed --name "Daily Report" --icon "src\assets\icon_windows.ico" --add-data "src\assets;src\assets" --collect-all flet_desktop main.py
+```
+
+Hasil build biasanya ada di folder `dist/` dengan nama `Daily Report.exe`.
 
 ## Cara Penggunaan (Alur Umum)
 
