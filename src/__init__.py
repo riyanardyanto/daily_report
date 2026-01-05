@@ -1,0 +1,1 @@
+"""Daily Report application package."""
