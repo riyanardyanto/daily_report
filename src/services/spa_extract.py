@@ -91,15 +91,19 @@ def get_line_performance_details(df: pd.DataFrame):
     return final_segments
 
 
-def _split_segments_by_marker(df: pd.DataFrame, *, marker_col_idx: int = 14) -> list[pd.DataFrame]:
+def _split_segments_by_marker(
+    df: pd.DataFrame, *, marker_col_idx: int = 14
+) -> list[pd.DataFrame]:
     if df is None or df.empty:
         return []
     if df.shape[1] <= marker_col_idx:
         return []
 
     try:
-        mask = df.iloc[:, marker_col_idx].astype(str).str.contains(
-            "i", na=False, case=False
+        mask = (
+            df.iloc[:, marker_col_idx]
+            .astype(str)
+            .str.contains("i", na=False, case=False)
         )
         positions = [i for i, v in enumerate(mask) if v]
     except Exception:
@@ -170,7 +174,7 @@ def get_data_actual(df: pd.DataFrame) -> pd.DataFrame:
         "MTBF": (0, 7, 5),
         "UPDT": (7, 5, 1),
         "PDT": (6, 5, 1),
-        "NATR": (5, 5, 1),
+        "NATR": (4, 5, 1),
     }
 
     rows: list[dict[str, object]] = []
