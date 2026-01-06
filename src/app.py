@@ -456,8 +456,8 @@ class DashboardApp(ft.Row):
         spa_url = get_url_spa(
             link_up=self.sidebar.link_up.value[-2:],
             date=self.sidebar.date_field.value,
-            shift=self.sidebar.shift.value or "",
-            functional_location=self.sidebar.func_location.value or "PACK",
+            shift=self.sidebar.shift.value[-1] or "",
+            functional_location=self.sidebar.func_location.value[:4].upper() or "PACK",
             base_url=spa_cfg.base_url or None,
         )
 

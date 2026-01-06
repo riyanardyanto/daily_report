@@ -272,6 +272,14 @@ class MetricsTable(ft.Container):
             headers, rows = self.get_tabulate_data()
             if not rows:
                 return ""
-            return str(tabulate(rows, headers=headers, tablefmt=tablefmt)).strip()
+            return str(
+                tabulate(
+                    rows,
+                    headers=headers,
+                    tablefmt=tablefmt,
+                    numalign="left",
+                    stralign="left",
+                )
+            ).strip()
         except Exception:
             return ""
