@@ -121,6 +121,14 @@ def _split_segments_by_marker(
     except Exception:
         return []
 
+    from tabulate import tabulate
+
+    with open("x-debug_segments.txt", "w", encoding="utf-8") as f:
+        for i, seg in enumerate(segments):
+            f.write(f"Segment {i}:\n")
+            f.write(tabulate(seg, headers="keys", tablefmt="psql"))
+            f.write("\n\n")
+
     return segments
 
 
@@ -170,22 +178,21 @@ def get_data_actual(df: pd.DataFrame) -> pd.DataFrame:
 
     extraction = {
         "STOP": (7, 2, 1),
+        "L STOP": (2, 2, 1),
         "PR": (0, 5, 5),
+        "UPTIME": (0, 5, 6),
         "MTBF": (0, 7, 5),
+        "L MTBF": (2, 7, 1),
         "UPDT": (7, 5, 1),
         "PDT": (6, 5, 1),
-        "NATR": (4, 5, 1),
+        "TRL": (4, 5, 2),
     }
 
     rows: list[dict[str, object]] = []
     for metric, (seg_i, col_i, row_i) in extraction.items():
         v = _get_cell(segments, seg_i, col_i, row_i)
-        if v is None:
-            continue
-        rows.append({"Metric": metric, "Value": v})
-
-    if not rows:
-        return _empty()
+        # Always include the metric so downstream UI/templates have a stable set.
+        rows.append({"Metric": metric, "Value": "" if v is None else v})
 
     return pd.DataFrame(rows, columns=["Metric", "Value"])
 

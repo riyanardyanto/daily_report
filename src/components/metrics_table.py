@@ -18,6 +18,37 @@ class MetricsTable(ft.Container):
         )
 
         # build the DataTable (headers centered for Target/Actual and numeric cells centered)
+        default_metrics = [
+            "STOP",
+            "L STOP",
+            "PR",
+            "UPTIME",
+            "MTBF",
+            "L MTBF",
+            "UPDT",
+            "PDT",
+            "TRL",
+        ]
+
+        default_rows = [
+            ft.DataRow(
+                cells=[
+                    ft.DataCell(ft.Text(metric, size=10)),
+                    ft.DataCell(
+                        ft.Container(
+                            alignment=ft.alignment.center,
+                        )
+                    ),
+                    ft.DataCell(
+                        ft.Container(
+                            alignment=ft.alignment.center,
+                        )
+                    ),
+                ]
+            )
+            for metric in default_metrics
+        ]
+
         table = ft.DataTable(
             columns=[
                 ft.DataColumn(ft.Text("Metric", size=12, weight=ft.FontWeight.W_600)),
@@ -30,110 +61,7 @@ class MetricsTable(ft.Container):
                     heading_row_alignment=ft.MainAxisAlignment.CENTER,
                 ),
             ],
-            rows=[
-                ft.DataRow(
-                    cells=[
-                        ft.DataCell(ft.Text("STOP", size=10)),
-                        ft.DataCell(
-                            ft.Container(
-                                # content=ft.Text("3", size=10),
-                                alignment=ft.alignment.center,
-                            )
-                        ),
-                        ft.DataCell(
-                            ft.Container(
-                                # content=ft.Text("1", size=10),
-                                alignment=ft.alignment.center,
-                            )
-                        ),
-                    ]
-                ),
-                ft.DataRow(
-                    cells=[
-                        ft.DataCell(ft.Text("PR", size=10)),
-                        ft.DataCell(
-                            ft.Container(
-                                # content=ft.Text("75", size=10),
-                                alignment=ft.alignment.center,
-                            )
-                        ),
-                        ft.DataCell(
-                            ft.Container(
-                                # content=ft.Text("77.4", size=10),
-                                alignment=ft.alignment.center,
-                            )
-                        ),
-                    ]
-                ),
-                ft.DataRow(
-                    cells=[
-                        ft.DataCell(ft.Text("MTBF", size=10)),
-                        ft.DataCell(
-                            ft.Container(
-                                # content=ft.Text("105", size=10),
-                                alignment=ft.alignment.center,
-                            )
-                        ),
-                        ft.DataCell(
-                            ft.Container(
-                                # content=ft.Text("224", size=10),
-                                alignment=ft.alignment.center,
-                            )
-                        ),
-                    ]
-                ),
-                ft.DataRow(
-                    cells=[
-                        ft.DataCell(ft.Text("UPDT", size=10)),
-                        ft.DataCell(
-                            ft.Container(
-                                # content=ft.Text("4", size=10),
-                                alignment=ft.alignment.center,
-                            )
-                        ),
-                        ft.DataCell(
-                            ft.Container(
-                                # content=ft.Text("14", size=10),
-                                alignment=ft.alignment.center,
-                            )
-                        ),
-                    ]
-                ),
-                ft.DataRow(
-                    cells=[
-                        ft.DataCell(ft.Text("PDT", size=10)),
-                        ft.DataCell(
-                            ft.Container(
-                                # content=ft.Text("8", size=10),
-                                alignment=ft.alignment.center,
-                            )
-                        ),
-                        ft.DataCell(
-                            ft.Container(
-                                # content=ft.Text("4", size=10),
-                                alignment=ft.alignment.center,
-                            )
-                        ),
-                    ]
-                ),
-                ft.DataRow(
-                    cells=[
-                        ft.DataCell(ft.Text("NATR", size=10)),
-                        ft.DataCell(
-                            ft.Container(
-                                # content=ft.Text("5", size=10),
-                                alignment=ft.alignment.center,
-                            )
-                        ),
-                        ft.DataCell(
-                            ft.Container(
-                                # content=ft.Text("3", size=10),
-                                alignment=ft.alignment.center,
-                            )
-                        ),
-                    ]
-                ),
-            ],
+            rows=default_rows,
             border=ft.border.all(1, ft.Colors.BLACK12),
             heading_row_color=ft.Colors.BLUE_GREY_50,
             data_row_max_height=24,

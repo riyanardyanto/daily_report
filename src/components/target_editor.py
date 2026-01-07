@@ -91,6 +91,20 @@ class TargetEditorDialog:
                 except Exception:
                     metrics = []
 
+                # If the table is empty/uninitialized, fall back to the current default metric set.
+                if not metrics:
+                    metrics = [
+                        "STOP",
+                        "L STOP",
+                        "PR",
+                        "UPTIME",
+                        "MTBF",
+                        "L MTBF",
+                        "UPDT",
+                        "PDT",
+                        "TRL",
+                    ]
+
                 _p, _targets, _created, err = load_targets_csv(
                     shift=selected_shift,
                     filename=filename,
@@ -365,11 +379,13 @@ class TargetEditorDialog:
                     try:
                         ref = cell_refs.get(metric, {}).get(sc)
                         tf = getattr(ref, "current", None) if ref is not None else None
-                        row[sc] = (
-                            str(getattr(tf, "value", "") or "").strip()
+                        raw_val = (
+                            str(getattr(tf, "value", "") or "")
                             if tf is not None
                             else ""
                         )
+                        # Normalize user input before saving (e.g. "75%" -> "75").
+                        row[sc] = raw_val.replace("%", "").strip()
                     except Exception:
                         row[sc] = ""
                 out_rows.append(row)

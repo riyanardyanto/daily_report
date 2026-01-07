@@ -46,9 +46,9 @@ class DashboardApp(ft.Container):
                     self.stops_table,
                 ],
                 expand=True,
-                spacing=12,
+                spacing=10,
             ),
-            expand=True,
+            expand=False,
             padding=10,
         )
 
@@ -436,37 +436,9 @@ class DashboardApp(ft.Container):
         if not shift:
             shift = "Shift 1"
 
-        try:
-            existing_rows = self.metrics_table.get_rows_data()
-            metrics = [m for m, _t, _a in existing_rows if str(m).strip()]
-        except Exception:
-            metrics = []
-
-        csv_path, targets, created_template, err = load_targets_csv(
-            shift=shift,
-            filename=filename,
-            folder_name="data_app/targets",
-            metrics=metrics,
-        )
-        if err:
-            print(f"Failed reading targets from CSV: {err}")
-            return
-        if created_template:
-            print(f"Target CSV not found; created empty template: {csv_path}")
-            return
-
-        if not targets:
-            print(f"No targets loaded from {csv_path.name} for {shift}.")
-            return
-
-        try:
-            self.metrics_table.set_targets(targets)
-        except Exception as ex:
-            print(f"Failed updating MetricsTable targets: {ex}")
-            return
-
-        # Update Actual column using SPA df
+        # Compute actual metrics first so the table rows can follow get_data_actual() output.
         actuals: dict[str, str] = {}
+        actual_metric_order: list[str] = []
         try:
             df_actual = process_data(df)
             actual_df = get_data_actual(df_actual)
@@ -478,6 +450,8 @@ class DashboardApp(ft.Container):
                         metric = str(row.get("Metric", "") or "").strip()
                         value = row.get("Value", "")
                         if metric:
+                            if metric not in actual_metric_order:
+                                actual_metric_order.append(metric)
                             actuals[metric] = str(
                                 value if value is not None else ""
                             ).strip()
@@ -487,27 +461,78 @@ class DashboardApp(ft.Container):
                 # Fallback if service returns dict
                 for k, v in actual_df.items():
                     try:
-                        actuals[str(k).strip()] = str(
-                            v if v is not None else ""
-                        ).strip()
+                        metric = str(k).strip()
+                        if metric:
+                            if metric not in actual_metric_order:
+                                actual_metric_order.append(metric)
+                            actuals[metric] = str(v if v is not None else "").strip()
                     except Exception:
                         pass
         except Exception as ex:
             print(f"Failed computing actual metrics: {ex}")
             actuals = {}
+            actual_metric_order = []
 
-        if actuals:
-            try:
-                current_rows = self.metrics_table.get_rows_data()
-                if current_rows:
-                    new_rows: list[tuple[str, str, str]] = []
-                    for metric, target, actual in current_rows:
-                        if metric in actuals:
-                            actual = actuals.get(metric, actual)
-                        new_rows.append((metric, target, actual))
-                    self.metrics_table.set_rows(new_rows)
-            except Exception as ex:
-                print(f"Failed updating MetricsTable actuals: {ex}")
+        try:
+            existing_rows = self.metrics_table.get_rows_data()
+            metrics = [m for m, _t, _a in existing_rows if str(m).strip()]
+        except Exception:
+            metrics = []
+
+        # Build metric list for target template creation (preserve order, avoid duplicates)
+        metrics_for_template: list[str] = []
+        for m in list(actual_metric_order) + list(metrics):
+            m = str(m or "").strip()
+            if m and m not in metrics_for_template:
+                metrics_for_template.append(m)
+
+        csv_path, targets, created_template, err = load_targets_csv(
+            shift=shift,
+            filename=filename,
+            folder_name="data_app/targets",
+            metrics=metrics_for_template,
+        )
+        if err:
+            print(f"Failed reading targets from CSV: {err}")
+            return
+        if created_template:
+            print(f"Target CSV not found; created empty template: {csv_path}")
+            # Continue updating the UI (targets will be empty)
+
+        if not targets:
+            # No targets is still a valid state; we can still show Actual metrics.
+            print(f"No targets loaded from {csv_path.name} for {shift}.")
+
+        # Update rows to follow get_data_actual() output order.
+        try:
+            # Start from actual order, then add any target-only metrics (e.g., legacy metrics like NATR)
+            metrics_display: list[str] = []
+            for m in list(actual_metric_order):
+                m = str(m or "").strip()
+                if m and m not in metrics_display:
+                    metrics_display.append(m)
+
+            for m in list((targets or {}).keys()):
+                m = str(m or "").strip()
+                if m and m not in metrics_display:
+                    metrics_display.append(m)
+
+            # Fall back to existing table metrics if both are empty
+            if not metrics_display:
+                for m in list(metrics):
+                    m = str(m or "").strip()
+                    if m and m not in metrics_display:
+                        metrics_display.append(m)
+
+            new_rows: list[tuple[str, str, str]] = []
+            for metric in metrics_display:
+                target = str((targets or {}).get(metric, "") or "").strip()
+                actual = str(actuals.get(metric, "") or "").strip()
+                new_rows.append((metric, target, actual))
+
+            self.metrics_table.set_rows(new_rows)
+        except Exception as ex:
+            print(f"Failed rebuilding MetricsTable rows: {ex}")
 
         print(f"Metrics targets updated for {shift} from {csv_path.name}.")
 
