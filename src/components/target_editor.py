@@ -5,6 +5,7 @@ import csv
 import flet as ft
 
 from src.utils.helpers import data_app_path, load_targets_csv
+from src.utils.theme import ON_COLOR, PRIMARY, SECONDARY
 from src.utils.ui_helpers import is_file_locked_windows, snack
 
 
@@ -97,7 +98,7 @@ class TargetEditorDialog:
                     metrics=metrics,
                 )
                 if err:
-                    snack(page, f"Gagal membuat template CSV: {err}", kind="error")
+                    snack(page, f"Failed to create template CSV: {err}", kind="error")
                     return
 
             with csv_path.open("r", newline="", encoding="utf-8-sig") as f:
@@ -111,14 +112,14 @@ class TargetEditorDialog:
                         metric_col = candidate
                         break
                 if metric_col is None:
-                    snack(page, "Kolom 'Metrics' tidak ditemukan di CSV", kind="error")
+                    snack(page, "Column 'Metrics' not found in CSV", kind="error")
                     return
 
                 shift_cols = [
                     c for c in ("Shift 1", "Shift 2", "Shift 3") if c in fieldnames
                 ]
                 if not shift_cols:
-                    snack(page, "Kolom shift tidak ditemukan di CSV", kind="error")
+                    snack(page, "Shift columns not found in CSV", kind="error")
                     return
 
                 for row in reader:
@@ -131,7 +132,7 @@ class TargetEditorDialog:
                     }
 
         except Exception as ex:
-            snack(page, f"Gagal membaca CSV: {ex}", kind="error")
+            snack(page, f"Failed to read CSV: {ex}", kind="error")
             return
 
         shift_cols = [c for c in ("Shift 1", "Shift 2", "Shift 3") if c in fieldnames]
@@ -255,7 +256,7 @@ class TargetEditorDialog:
                         dt.update()
                     except Exception:
                         pass
-                    snack(page, f"Paste berhasil ({updated} cell)", kind="success")
+                    snack(page, f"Paste successful ({updated} cell)", kind="success")
                     return
 
             # Case B: matrix is pure values without metric names
@@ -271,7 +272,7 @@ class TargetEditorDialog:
                     dt.update()
                 except Exception:
                     pass
-                snack(page, f"Paste berhasil ({updated} cell)", kind="success")
+                snack(page, f"Paste successful ({updated} cell)", kind="success")
                 return
 
             if height == len(metrics_order) and width == 1:
@@ -282,12 +283,12 @@ class TargetEditorDialog:
                     dt.update()
                 except Exception:
                     pass
-                snack(page, f"Paste berhasil ({updated} cell)", kind="success")
+                snack(page, f"Paste successful ({updated} cell)", kind="success")
                 return
 
             snack(
                 page,
-                "Format paste tidak dikenali. Copy dari Excel sebagai: (Metrics+nilai) atau matriks nilai.",
+                "Paste format not recognized. Copy from Excel as: (Metrics + values) or a value matrix.",
                 kind="warning",
             )
 
@@ -319,7 +320,7 @@ class TargetEditorDialog:
                     matrix = _parse_excel_clipboard(clip)
                     _apply_matrix(matrix)
                 except Exception as ex:
-                    snack(page, f"Gagal paste: {ex}", kind="error")
+                    snack(page, f"Paste failed: {ex}", kind="error")
 
             try:
                 runner = getattr(page, "run_task", None)
@@ -340,8 +341,8 @@ class TargetEditorDialog:
                 if csv_path.exists() and is_file_locked_windows(csv_path):
                     snack(
                         page,
-                        "Tidak bisa simpan target karena file CSV sedang terbuka/terkunci (mis. di Excel).\n"
-                        f"Tutup file ini dulu: {csv_path}",
+                        "Can't save targets because the CSV file is open/locked (e.g., in Excel).\n"
+                        f"Close this file first: {csv_path}",
                         kind="warning",
                     )
                     return
@@ -391,9 +392,9 @@ class TargetEditorDialog:
             except PermissionError:
                 snack(
                     page,
-                    "Gagal simpan target: file CSV tidak bisa ditulis.\n"
-                    "Kemungkinan sedang terbuka (mis. di Excel).\n"
-                    f"Tutup file ini dulu: {csv_path}",
+                    "Failed to save targets: CSV file is not writable.\n"
+                    "It may be open (e.g., in Excel).\n"
+                    f"Close this file first: {csv_path}",
                     kind="warning",
                 )
                 return
@@ -401,15 +402,15 @@ class TargetEditorDialog:
                 if getattr(ex, "winerror", None) in (32, 33):
                     snack(
                         page,
-                        "Gagal simpan target: file CSV sedang dipakai aplikasi lain (mis. Excel).\n"
-                        f"Tutup file ini dulu: {csv_path}",
+                        "Failed to save targets: CSV file is in use by another app (e.g., Excel).\n"
+                        f"Close this file first: {csv_path}",
                         kind="warning",
                     )
                     return
-                snack(page, f"Gagal simpan CSV: {ex}", kind="error")
+                snack(page, f"Failed to save CSV: {ex}", kind="error")
                 return
             except Exception as ex:
-                snack(page, f"Gagal simpan CSV: {ex}", kind="error")
+                snack(page, f"Failed to save CSV: {ex}", kind="error")
                 return
 
             try:
@@ -420,26 +421,26 @@ class TargetEditorDialog:
                     metrics=metrics_order,
                 )
                 if err:
-                    snack(page, f"Gagal refresh targets: {err}", kind="error")
+                    snack(page, f"Failed to refresh targets: {err}", kind="error")
                     return
 
                 if targets and callable(self._set_metrics_targets_cb):
                     self._set_metrics_targets_cb(targets)
             except Exception as ex:
-                snack(page, f"Gagal refresh targets: {ex}", kind="error")
+                snack(page, f"Failed to refresh targets: {ex}", kind="error")
                 return
 
-            snack(page, f"Targets tersimpan ({link_up})", kind="success")
+            snack(page, f"Targets saved ({link_up})", kind="success")
             _close_dialog()
 
         self._dlg = ft.AlertDialog(
             modal=True,
-            title=ft.Text("Edit Target"),
+            title=ft.Text("Edit target"),
             content=ft.Container(
                 content=ft.Column(
                     controls=[
                         ft.Text(
-                            "Copy range dari Excel lalu klik Paste.",
+                            "Copy a range from Excel, then click Paste.",
                             size=12,
                             italic=True,
                         ),
@@ -452,12 +453,35 @@ class TargetEditorDialog:
                     spacing=8,
                     scroll=ft.ScrollMode.AUTO,
                 ),
-                padding=ft.padding.all(8),
+                padding=ft.padding.all(12),
+                bgcolor=ft.Colors.WHITE,
+                border=ft.border.all(1, ft.Colors.BLACK12),
+                border_radius=10,
             ),
             actions=[
-                ft.TextButton("Paste", on_click=_on_paste),
-                ft.TextButton("Save", on_click=_on_save),
-                ft.TextButton("Close", on_click=_close_dialog),
+                ft.Row(
+                    controls=[
+                        ft.TextButton(
+                            "Close",
+                            on_click=_close_dialog,
+                            style=ft.ButtonStyle(color=SECONDARY),
+                        ),
+                        ft.ElevatedButton(
+                            "Paste",
+                            on_click=_on_paste,
+                            color=ON_COLOR,
+                            bgcolor=SECONDARY,
+                        ),
+                        ft.ElevatedButton(
+                            "Save",
+                            on_click=_on_save,
+                            color=ON_COLOR,
+                            bgcolor=PRIMARY,
+                        ),
+                    ],
+                    alignment=ft.MainAxisAlignment.END,
+                    spacing=8,
+                )
             ],
             actions_alignment=ft.MainAxisAlignment.END,
             on_dismiss=lambda _e: _close_dialog(),

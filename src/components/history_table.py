@@ -5,6 +5,7 @@ from pathlib import Path
 
 import flet as ft
 
+from src.utils.theme import ON_COLOR, PRIMARY, SECONDARY
 from src.utils.ui_helpers import snack
 
 
@@ -43,7 +44,7 @@ class HistoryTableDialog:
             return
 
         if not self.csv_path.exists():
-            snack(page, f"History belum ada: {self.csv_path}", kind="warning")
+            snack(page, f"History not found: {self.csv_path}", kind="warning")
             return
 
         try:
@@ -53,14 +54,14 @@ class HistoryTableDialog:
                 rows_data = list(reader)
 
             if not fieldnames:
-                snack(page, "History CSV tidak memiliki header", kind="warning")
+                snack(page, "History CSV has no header", kind="warning")
                 return
 
             visible_fields = [c for c in fieldnames if c not in self.hidden_columns]
             if not visible_fields:
                 snack(
                     page,
-                    "History CSV tidak memiliki kolom yang bisa ditampilkan",
+                    "History CSV has no columns to display",
                     kind="warning",
                 )
                 return
@@ -74,8 +75,8 @@ class HistoryTableDialog:
             self._file_picker.on_result = self._on_export_result
 
             self._filter_tf = ft.TextField(
-                label="Filter",
-                hint_text="Ketik untuk filter data...",
+                label="Search",
+                hint_text="Type to search...",
                 text_size=12,
                 dense=True,
                 on_change=self._apply_filter,
@@ -120,7 +121,10 @@ class HistoryTableDialog:
                 ),
                 width=1200,
                 height=650,
-                padding=ft.padding.all(8),
+                padding=ft.padding.all(12),
+                bgcolor=ft.Colors.WHITE,
+                border=ft.border.all(1, ft.Colors.BLACK12),
+                border_radius=10,
                 expand=True,
             )
 
@@ -129,8 +133,23 @@ class HistoryTableDialog:
                 title=ft.Text(f"{self.title} ({len(self._rows_data)} rows)"),
                 content=self._content_container,
                 actions=[
-                    ft.TextButton("Export", on_click=self._on_export_click),
-                    ft.TextButton("Close", on_click=self.close),
+                    ft.Row(
+                        controls=[
+                            ft.TextButton(
+                                "Close",
+                                on_click=self.close,
+                                style=ft.ButtonStyle(color=SECONDARY),
+                            ),
+                            ft.ElevatedButton(
+                                "Export",
+                                on_click=self._on_export_click,
+                                color=ON_COLOR,
+                                bgcolor=PRIMARY,
+                            ),
+                        ],
+                        alignment=ft.MainAxisAlignment.END,
+                        spacing=8,
+                    )
                 ],
                 actions_alignment=ft.MainAxisAlignment.END,
                 on_dismiss=self.close,
@@ -151,7 +170,7 @@ class HistoryTableDialog:
                 page.update()
 
         except Exception as ex:
-            snack(page, f"Gagal membaca history.csv: {ex}", kind="error")
+            snack(page, f"Failed to read history.csv: {ex}", kind="error")
 
     def close(self, _e=None):
         page = self.page
@@ -188,7 +207,7 @@ class HistoryTableDialog:
             )
             self.close()
         except Exception as ex:
-            snack(self.page, f"Gagal buka file dialog: {ex}", kind="error")
+            snack(self.page, f"Failed to open file dialog: {ex}", kind="error")
 
     def _on_export_result(self, ev: ft.FilePickerResultEvent):
         try:
@@ -214,9 +233,9 @@ class HistoryTableDialog:
                     }
                     writer.writerow(out)
 
-            snack(self.page, f"Export berhasil: {p}", kind="success")
+            snack(self.page, f"Export successful: {p}", kind="success")
         except Exception as ex:
-            snack(self.page, f"Gagal export CSV: {ex}", kind="error")
+            snack(self.page, f"Failed to export CSV: {ex}", kind="error")
 
     def _row_matches(self, row_obj: dict, q: str) -> bool:
         if not q:

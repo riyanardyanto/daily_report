@@ -3,6 +3,7 @@ from __future__ import annotations
 import flet as ft
 
 from src.utils.helpers import load_settings_options, save_settings_options
+from src.utils.theme import ON_COLOR, PRIMARY, SECONDARY
 from src.utils.ui_helpers import snack
 
 
@@ -90,7 +91,7 @@ class SettingsDialog:
         )
 
         lu_text = ft.TextField(
-            label="Link Up (1 baris per option)",
+            label="Link Up (one per line)",
             value="\n".join(lu_opts or []),
             multiline=True,
             min_lines=6,
@@ -98,7 +99,7 @@ class SettingsDialog:
             text_size=12,
         )
         user_text = ft.TextField(
-            label="User (1 baris per option)",
+            label="User (one per line)",
             value="\n".join(user_opts or []),
             multiline=True,
             min_lines=6,
@@ -126,10 +127,10 @@ class SettingsDialog:
             )
 
             if not ok1:
-                snack(page, f"Gagal simpan Link Up: {err1} ({p1})", kind="error")
+                snack(page, f"Failed to save Link Up: {err1} ({p1})", kind="error")
                 return
             if not ok2:
-                snack(page, f"Gagal simpan User: {err2} ({p2})", kind="error")
+                snack(page, f"Failed to save User: {err2} ({p2})", kind="error")
                 return
 
             try:
@@ -138,7 +139,7 @@ class SettingsDialog:
             except Exception:
                 pass
 
-            snack(page, "Settings tersimpan", kind="success")
+            snack(page, "Settings saved", kind="success")
             _close()
 
         self._dlg = ft.AlertDialog(
@@ -148,7 +149,7 @@ class SettingsDialog:
                 content=ft.Column(
                     controls=[
                         ft.Text(
-                            "Edit daftar option untuk dropdown Link Up & User.",
+                            "Edit the options list for the Link Up & User dropdowns.",
                             size=12,
                         ),
                         ft.Divider(height=10),
@@ -160,10 +161,29 @@ class SettingsDialog:
                     scroll=ft.ScrollMode.AUTO,
                 ),
                 width=520,
+                padding=ft.padding.all(12),
+                bgcolor=ft.Colors.WHITE,
+                border=ft.border.all(1, ft.Colors.BLACK12),
+                border_radius=10,
             ),
             actions=[
-                ft.TextButton("Save", on_click=_on_save),
-                ft.TextButton("Close", on_click=_close),
+                ft.Row(
+                    controls=[
+                        ft.TextButton(
+                            "Close",
+                            on_click=_close,
+                            style=ft.ButtonStyle(color=SECONDARY),
+                        ),
+                        ft.ElevatedButton(
+                            "Save",
+                            on_click=_on_save,
+                            color=ON_COLOR,
+                            bgcolor=PRIMARY,
+                        ),
+                    ],
+                    alignment=ft.MainAxisAlignment.END,
+                    spacing=8,
+                )
             ],
             actions_alignment=ft.MainAxisAlignment.END,
             on_dismiss=_close,

@@ -16,25 +16,25 @@ class StopsTable(ft.Container):
         # build the DataTable (headers centered for Target/Actual and numeric cells centered)
         table = ft.DataTable(
             columns=[
-                ft.DataColumn(ft.Text("Line", size=12)),
+                ft.DataColumn(ft.Text("Line", size=12, weight=ft.FontWeight.W_600)),
                 ft.DataColumn(
-                    ft.Text("Issue", size=12),
+                    ft.Text("Issue", size=12, weight=ft.FontWeight.W_600),
                     heading_row_alignment=ft.MainAxisAlignment.CENTER,
                 ),
                 ft.DataColumn(
-                    ft.Text("Stops", size=12),
+                    ft.Text("Stops", size=12, weight=ft.FontWeight.W_600),
                     heading_row_alignment=ft.MainAxisAlignment.CENTER,
                 ),
                 ft.DataColumn(
-                    ft.Text("Downtime", size=12),
+                    ft.Text("Dt[min]", size=12, weight=ft.FontWeight.W_600),
                     heading_row_alignment=ft.MainAxisAlignment.CENTER,
                 ),
             ],
             border=ft.border.all(1, ft.Colors.BLACK12),
             heading_row_color=ft.Colors.BLUE_GREY_50,
-            data_row_max_height=36,
-            data_row_min_height=18,
-            heading_row_height=28,
+            data_row_max_height=50,
+            data_row_min_height=28,
+            heading_row_height=34,
             vertical_lines=ft.BorderSide(1, ft.Colors.BLACK12),
             horizontal_lines=ft.BorderSide(1, ft.Colors.BLACK12),
         )
@@ -54,7 +54,7 @@ class StopsTable(ft.Container):
 
         content = ft.Column(
             [
-                ft.Text("STOP DETAILS", size=12, weight=ft.FontWeight.BOLD),
+                ft.Text("Stop Details", size=12, weight=ft.FontWeight.W_600),
                 table_container,
             ],
             horizontal_alignment=ft.CrossAxisAlignment.STRETCH,
@@ -67,6 +67,8 @@ class StopsTable(ft.Container):
             expand=True,
             bgcolor=ft.Colors.WHITE,
             padding=ft.padding.all(10),
+            border=ft.border.all(1, ft.Colors.BLACK12),
+            border_radius=10,
         )
 
     def set_rows(self, rows: list[tuple[str, str, str, str]]):
@@ -74,17 +76,36 @@ class StopsTable(ft.Container):
 
         rows: list of tuples where each tuple is (line, issue, stops, downtime)
         """
+        # Color rows by "Line" group so identical Line values share the same background.
+        # Keep the palette subtle and based on existing theme primitives.
+        group_palette = [
+            ft.Colors.BLUE_50,
+            ft.Colors.INDIGO_50,
+            ft.Colors.TEAL_50,
+            ft.Colors.GREEN_50,
+            ft.Colors.AMBER_50,
+            ft.Colors.ORANGE_50,
+            ft.Colors.RED_50,
+        ]
+
         dt_rows = []
         for line, issue, stops, downtime in rows:
+            line_key = str(line).strip() if line is not None else ""
+            palette_index = (
+                sum(ord(ch) for ch in line_key) % len(group_palette) if line_key else 0
+            )
+            row_color = group_palette[palette_index]
+
             # preserve the full row as a list and pass it to the double-tap handler
             row_list = [line, issue, stops, downtime]
             dt_rows.append(
                 ft.DataRow(
+                    color=row_color,
                     cells=[
                         ft.DataCell(
                             ft.GestureDetector(
                                 content=ft.Container(
-                                    content=ft.Text(line, size=10),
+                                    content=ft.Text(line, size=11),
                                     alignment=ft.alignment.center_left,
                                     padding=ft.padding.only(left=4),
                                 ),
@@ -95,7 +116,7 @@ class StopsTable(ft.Container):
                         ft.DataCell(
                             ft.GestureDetector(
                                 content=ft.Container(
-                                    content=ft.Text(str(issue), size=10),
+                                    content=ft.Text(str(issue), size=11),
                                     alignment=ft.alignment.center_left,
                                     padding=ft.padding.only(left=0),
                                 ),
@@ -106,7 +127,7 @@ class StopsTable(ft.Container):
                         ft.DataCell(
                             ft.GestureDetector(
                                 content=ft.Container(
-                                    content=ft.Text(str(stops), size=10),
+                                    content=ft.Text(str(stops), size=11),
                                     alignment=ft.alignment.center,
                                     padding=ft.padding.only(left=0),
                                 ),
@@ -117,7 +138,7 @@ class StopsTable(ft.Container):
                         ft.DataCell(
                             ft.GestureDetector(
                                 content=ft.Container(
-                                    content=ft.Text(str(downtime), size=10),
+                                    content=ft.Text(str(downtime), size=11),
                                     alignment=ft.alignment.center,
                                     padding=ft.padding.only(left=0),
                                 ),
@@ -125,7 +146,7 @@ class StopsTable(ft.Container):
                                 r=row_list: self._on_cell_double_tap(e, r),
                             )
                         ),
-                    ]
+                    ],
                 )
             )
         # find the DataTable regardless of wrapper (Container/ListView) and replace its rows

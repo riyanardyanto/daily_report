@@ -3,6 +3,7 @@ import traceback
 import flet as ft
 import pandas as pd
 
+from src.components.card_panel import CardPanel
 from src.components.metrics_table import MetricsTable
 from src.components.report_editor import ReportEditor
 from src.components.report_list_view import ReportList
@@ -25,8 +26,12 @@ from src.utils.helpers import data_app_path, load_targets_csv
 from src.utils.ui_helpers import snack
 
 
-class DashboardApp(ft.Row):
-    def __init__(self):
+class DashboardApp(ft.Container):
+    def __init__(self, page: ft.Page | None = None):
+        super().__init__()
+        self._page = page
+        self._is_compact = False
+
         self.spa_df: pd.DataFrame | None = None
         self.sidebar = Sidebar()
         self.metrics_table = MetricsTable(width=550)
@@ -34,14 +39,17 @@ class DashboardApp(ft.Row):
         self.stops_table = StopsTable(
             width=550, on_row_double_tap=self.on_stop_row_double
         )
-        self.table_container = ft.Container(
+        self.table_container = CardPanel(
             content=ft.Column(
                 controls=[
                     self.metrics_table,
                     self.stops_table,
                 ],
                 expand=True,
-            )
+                spacing=12,
+            ),
+            expand=True,
+            padding=10,
         )
 
         # use reusable ReportEditor component (keeps server-side order and stable keys)
@@ -50,6 +58,7 @@ class DashboardApp(ft.Row):
             expand=True,
             on_report_table=self._print_metrics_table,
             get_report_table_text=self._get_metrics_table_text,
+            get_include_table=self._get_include_table,
             get_metrics_rows=self._get_metrics_rows,
             set_metrics_targets=self._set_metrics_targets,
             get_selected_shift=self._get_selected_shift,
@@ -62,15 +71,14 @@ class DashboardApp(ft.Row):
         # use reusable ReportList component (keeps server-side order and stable keys)
         self.report_list = ReportList(expand=True)
         self.report_label = ft.Text("", size=12)
-        self.report_content = ft.Container(
+        self.report_content = CardPanel(
             content=ft.Column(
                 controls=[self.report_editor],
                 expand=True,
                 spacing=0,
             ),
-            padding=ft.padding.all(0),
             expand=True,
-            bgcolor=ft.Colors.BLUE_GREY_50,
+            padding=10,
         )
         # create if button get data is clicked in sidebar, then update the report content
         self.sidebar.get_data_button.on_click = self.update_tables
@@ -81,59 +89,142 @@ class DashboardApp(ft.Row):
             visible=False,
             expand=True,
         )
-        self.status_bar = ft.Text("", size=10)
-        super().__init__(
-            [
-                self.sidebar,
-                ft.Container(
-                    ft.Column(
-                        spacing=10,
-                        controls=[
-                            ft.Row(
-                                [
-                                    ft.Row(
-                                        [
-                                            ft.Icon(
-                                                ft.Icons.DASHBOARD_CUSTOMIZE, size=40
-                                            ),
-                                            ft.Text(
-                                                "DAILY REPORT DASHBOARD",
-                                                size=30,
-                                                weight=ft.FontWeight.BOLD,
-                                            ),
-                                        ],
-                                        expand=False,
-                                    ),
-                                    ft.Row(
-                                        controls=[
-                                            self.progress_bar,
-                                            self.status_bar,
-                                        ],
-                                        expand=True,
-                                        alignment=ft.MainAxisAlignment.END,
-                                    ),
-                                ],
-                                spacing=0,
-                                expand=False,
-                                alignment=ft.MainAxisAlignment.END,
-                            ),
-                            ft.Row(
-                                [
-                                    self.table_container,
-                                    self.report_content,
-                                ],
-                                alignment=ft.MainAxisAlignment.START,
-                                expand=True,
+
+        self.status_bar = ft.Text("", size=11, color=ft.Colors.BLUE_GREY_700)
+
+        header = ft.Container(
+            padding=ft.padding.symmetric(horizontal=10, vertical=10),
+            bgcolor=ft.Colors.WHITE,
+            border=ft.border.all(1, ft.Colors.BLACK12),
+            border_radius=10,
+            content=ft.Row(
+                [
+                    ft.Row(
+                        [
+                            ft.Icon(ft.Icons.DASHBOARD_CUSTOMIZE, size=26),
+                            ft.Text(
+                                "Daily Report Dashboard",
+                                size=20,
+                                weight=ft.FontWeight.BOLD,
                             ),
                         ],
-                        expand=True,
+                        spacing=8,
+                        expand=False,
+                        vertical_alignment=ft.CrossAxisAlignment.CENTER,
                     ),
-                    padding=ft.padding.only(left=0, right=10, top=10, bottom=10),
-                    expand=True,
-                ),
-            ],
+                    ft.Row(
+                        controls=[
+                            ft.Container(
+                                content=self.progress_bar,
+                                width=220,
+                            ),
+                            self.status_bar,
+                        ],
+                        expand=True,
+                        alignment=ft.MainAxisAlignment.END,
+                        vertical_alignment=ft.CrossAxisAlignment.CENTER,
+                        spacing=10,
+                    ),
+                ],
+                expand=True,
+                alignment=ft.MainAxisAlignment.SPACE_BETWEEN,
+                vertical_alignment=ft.CrossAxisAlignment.CENTER,
+            ),
+        )
+
+        self._main_panel = ft.Container(
+            content=ft.Column(
+                spacing=12,
+                controls=[
+                    header,
+                    ft.Row(
+                        [
+                            self.table_container,
+                            self.report_content,
+                        ],
+                        alignment=ft.MainAxisAlignment.START,
+                        expand=True,
+                        spacing=12,
+                    ),
+                ],
+                expand=True,
+            ),
+            padding=ft.padding.only(left=0, right=0, top=0, bottom=0),
             expand=True,
         )
+
+        # Host container; we can swap its content on resize to become responsive.
+        self._layout_host = ft.Container(expand=True)
+        self.content = self._layout_host
+        self.expand = True
+
+        # Apply initial layout (best-effort).
+        try:
+            w = None
+            if page is not None:
+                w = getattr(page, "width", None)
+            self.apply_responsive_layout(w)
+        except Exception:
+            self.apply_responsive_layout(None)
+
+    def apply_responsive_layout(self, page_width: int | float | None):
+        """Switch layout based on window width.
+
+        - Wide: sidebar on the left, content on the right.
+        - Narrow: sidebar stacked on top.
+        """
+
+        try:
+            w = float(page_width) if page_width is not None else None
+        except Exception:
+            w = None
+
+        compact = bool(w is not None and w < 980)
+        if (
+            compact == self._is_compact
+            and getattr(self._layout_host, "content", None) is not None
+        ):
+            return
+
+        self._is_compact = compact
+
+        # Sidebar sizing: fixed width on wide layouts, full-width on compact.
+        try:
+            if compact:
+                self.sidebar.width = None
+                self.sidebar.expand = True
+            else:
+                self.sidebar.width = 220
+                self.sidebar.expand = False
+        except Exception:
+            pass
+
+        if compact:
+            layout = ft.Column(
+                controls=[
+                    self.sidebar,
+                    self._main_panel,
+                ],
+                spacing=12,
+                expand=True,
+            )
+        else:
+            layout = ft.Row(
+                controls=[
+                    self.sidebar,
+                    self._main_panel,
+                ],
+                spacing=12,
+                expand=True,
+                vertical_alignment=ft.CrossAxisAlignment.STRETCH,
+            )
+
+        self._layout_host.content = layout
+
+        try:
+            self.update()
+        except Exception:
+            pass
 
     def _get_selected_shift(self) -> str:
         try:
@@ -178,6 +269,15 @@ class DashboardApp(ft.Row):
             return self.metrics_table.format_tabulated(tablefmt="pretty")
         except Exception:
             return ""
+
+    def _get_include_table(self) -> bool:
+        try:
+            sw = getattr(
+                getattr(self, "metrics_table", None), "include_table_switch", None
+            )
+            return bool(getattr(sw, "value", True))
+        except Exception:
+            return True
 
     def _get_metrics_rows(self) -> list[tuple[str, str, str]]:
         try:
@@ -281,7 +381,7 @@ class DashboardApp(ft.Row):
                 except Exception:
                     pass
                 if page is not None:
-                    snack(page, f"Gagal get SPA data: {ex}", kind="error")
+                    snack(page, f"Failed to get SPA data: {ex}", kind="error")
                 return
             if self.spa_df is None:
                 print("No SPA data available.")
@@ -291,7 +391,7 @@ class DashboardApp(ft.Row):
                 except Exception:
                     pass
                 if page is not None:
-                    snack(page, "Gagal get SPA data (data kosong)", kind="warning")
+                    snack(page, "Failed to get SPA data (empty data)", kind="warning")
                 return
 
             # Update status bar with SPA range (best-effort)

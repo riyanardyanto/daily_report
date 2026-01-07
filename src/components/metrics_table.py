@@ -1,20 +1,32 @@
 import flet as ft
 
+from src.utils.theme import SWITCH_ACTIVE
+
 
 class MetricsTable(ft.Container):
     """Reusable metrics table component."""
 
     def __init__(self, width: int = 500):
+        self.include_table_switch = ft.Switch(
+            label="Include table  ",
+            label_style=ft.TextStyle(size=18),
+            label_position=ft.LabelPosition.LEFT,
+            # width=130,
+            height=22,
+            value=True,
+            active_track_color=SWITCH_ACTIVE,
+        )
+
         # build the DataTable (headers centered for Target/Actual and numeric cells centered)
         table = ft.DataTable(
             columns=[
-                ft.DataColumn(ft.Text("Metric", size=12)),
+                ft.DataColumn(ft.Text("Metric", size=12, weight=ft.FontWeight.W_600)),
                 ft.DataColumn(
-                    ft.Text("Target", size=12),
+                    ft.Text("Target", size=12, weight=ft.FontWeight.W_600),
                     heading_row_alignment=ft.MainAxisAlignment.CENTER,
                 ),
                 ft.DataColumn(
-                    ft.Text("Actual", size=12),
+                    ft.Text("Actual", size=12, weight=ft.FontWeight.W_600),
                     heading_row_alignment=ft.MainAxisAlignment.CENTER,
                 ),
             ],
@@ -124,16 +136,26 @@ class MetricsTable(ft.Container):
             ],
             border=ft.border.all(1, ft.Colors.BLACK12),
             heading_row_color=ft.Colors.BLUE_GREY_50,
-            data_row_max_height=25,
-            data_row_min_height=25,
-            heading_row_height=30,
+            data_row_max_height=24,
+            data_row_min_height=24,
+            heading_row_height=34,
             vertical_lines=ft.BorderSide(1, ft.Colors.BLACK12),
             horizontal_lines=ft.BorderSide(1, ft.Colors.BLACK12),
         )
 
         content = ft.Column(
             [
-                ft.Text("TARGET VS ACTUAL", size=12, weight=ft.FontWeight.BOLD),
+                ft.Row(
+                    controls=[
+                        ft.Text(
+                            "Target vs Actual", size=12, weight=ft.FontWeight.W_600
+                        ),
+                        self.include_table_switch,
+                    ],
+                    spacing=10,
+                    vertical_alignment=ft.CrossAxisAlignment.CENTER,
+                    alignment=ft.MainAxisAlignment.SPACE_BETWEEN,
+                ),
                 table,
             ],
             horizontal_alignment=ft.CrossAxisAlignment.STRETCH,
@@ -148,6 +170,8 @@ class MetricsTable(ft.Container):
             expand=False,
             bgcolor=ft.Colors.WHITE,
             padding=ft.padding.all(10),
+            border=ft.border.all(1, ft.Colors.BLACK12),
+            border_radius=10,
         )
 
     def set_rows(self, rows: list[tuple[str, str, str]]):
@@ -160,16 +184,16 @@ class MetricsTable(ft.Container):
             dt_rows.append(
                 ft.DataRow(
                     cells=[
-                        ft.DataCell(ft.Text(metric, size=10)),
+                        ft.DataCell(ft.Text(metric, size=11)),
                         ft.DataCell(
                             ft.Container(
-                                content=ft.Text(str(target), size=10),
+                                content=ft.Text(str(target), size=11),
                                 alignment=ft.alignment.center,
                             )
                         ),
                         ft.DataCell(
                             ft.Container(
-                                content=ft.Text(str(actual), size=10),
+                                content=ft.Text(str(actual), size=11),
                                 alignment=ft.alignment.center,
                             )
                         ),

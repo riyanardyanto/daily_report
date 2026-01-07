@@ -5,6 +5,8 @@ import io
 
 import flet as ft
 
+from src.utils.theme import ON_COLOR, SECONDARY
+
 
 class QrCodeDialog:
     def __init__(
@@ -71,12 +73,31 @@ class QrCodeDialog:
             dlg = ft.AlertDialog(
                 modal=True,
                 title=ft.Text(self.title),
-                content=ft.Image(
-                    src_base64=png_b64,
-                    width=self.width,
-                    height=self.height,
+                content=ft.Container(
+                    content=ft.Image(
+                        src_base64=png_b64,
+                        width=self.width,
+                        height=self.height,
+                    ),
+                    alignment=ft.alignment.center,
+                    padding=ft.padding.all(12),
+                    bgcolor=ft.Colors.WHITE,
+                    border=ft.border.all(1, ft.Colors.BLACK12),
+                    border_radius=10,
                 ),
-                actions=[ft.TextButton("Close", on_click=_close_dialog)],
+                actions=[
+                    ft.Row(
+                        controls=[
+                            ft.ElevatedButton(
+                                "Close",
+                                on_click=_close_dialog,
+                                color=ON_COLOR,
+                                bgcolor=SECONDARY,
+                            )
+                        ],
+                        alignment=ft.MainAxisAlignment.END,
+                    )
+                ],
                 actions_alignment=ft.MainAxisAlignment.END,
                 on_dismiss=lambda _e: _close_dialog(),
             )
@@ -98,8 +119,26 @@ class QrCodeDialog:
             dlg = ft.AlertDialog(
                 modal=True,
                 title=ft.Text(self.title),
-                content=ft.Text(f"Gagal membuat QR: {ex}"),
-                actions=[ft.TextButton("Close", on_click=_close_dialog)],
+                content=ft.Container(
+                    content=ft.Text(f"Failed to generate QR: {ex}"),
+                    padding=ft.padding.all(12),
+                    bgcolor=ft.Colors.WHITE,
+                    border=ft.border.all(1, ft.Colors.BLACK12),
+                    border_radius=10,
+                ),
+                actions=[
+                    ft.Row(
+                        controls=[
+                            ft.ElevatedButton(
+                                "Close",
+                                on_click=_close_dialog,
+                                color=ON_COLOR,
+                                bgcolor=SECONDARY,
+                            )
+                        ],
+                        alignment=ft.MainAxisAlignment.END,
+                    )
+                ],
                 actions_alignment=ft.MainAxisAlignment.END,
                 on_dismiss=lambda _e: _close_dialog(),
             )

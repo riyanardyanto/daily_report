@@ -2,6 +2,8 @@ import uuid
 
 import flet as ft
 
+from src.utils.theme import DANGER, ON_COLOR, PRIMARY, SECONDARY, SUCCESS
+
 
 class ReportList(ft.ReorderableListView):
     """Reusable report list component."""
@@ -71,8 +73,9 @@ class ReportList(ft.ReorderableListView):
             header = controls[0]
             row = getattr(header, "content", None)
             row_controls = getattr(row, "controls", None) or []
-            if row_controls and isinstance(row_controls[0], ft.TextField):
-                return self._clean_text(row_controls[0].value)
+            for c in row_controls:
+                if isinstance(c, ft.TextField):
+                    return self._clean_text(c.value)
         except Exception:
             pass
         return ""
@@ -253,7 +256,9 @@ class ReportList(ft.ReorderableListView):
                     try:
                         title_row = getattr(detail_tile, "title", None)
                         title_controls = getattr(title_row, "controls", None) or []
-                        if title_controls and isinstance(title_controls[0], ft.TextField):
+                        if title_controls and isinstance(
+                            title_controls[0], ft.TextField
+                        ):
                             existing_detail_text = str(title_controls[0].value or "")
                     except Exception:
                         existing_detail_text = ""
@@ -261,10 +266,16 @@ class ReportList(ft.ReorderableListView):
                     action_texts: list[str] = []
                     for c in list(detail_tile.controls or []):
                         try:
-                            if isinstance(c, ft.Container) and isinstance(c.content, ft.Row):
+                            if isinstance(c, ft.Container) and isinstance(
+                                c.content, ft.Row
+                            ):
                                 row_controls = c.content.controls or []
-                                if row_controls and isinstance(row_controls[0], ft.TextField):
-                                    action_texts.append(str(row_controls[0].value or ""))
+                                if row_controls and isinstance(
+                                    row_controls[0], ft.TextField
+                                ):
+                                    action_texts.append(
+                                        str(row_controls[0].value or "")
+                                    )
                         except Exception:
                             continue
 
@@ -352,7 +363,9 @@ class ReportList(ft.ReorderableListView):
                             issue_column.controls.pop(i)
                             break
 
-            if len(issue_column.controls) == 2 and isinstance(issue_column.controls[1], ft.Divider):
+            if len(issue_column.controls) == 2 and isinstance(
+                issue_column.controls[1], ft.Divider
+            ):
                 issue_column.controls.pop(1)
 
             issue_column.update()
@@ -384,11 +397,32 @@ class ReportList(ft.ReorderableListView):
 
         dlg = ft.AlertDialog(
             modal=True,
-            title=ft.Text("Confirm delete"),
-            content=ft.Text("Hapus detail ini?"),
+            title=ft.Text("Confirm"),
+            content=ft.Container(
+                content=ft.Text("Delete this detail?"),
+                padding=ft.padding.all(12),
+                bgcolor=ft.Colors.WHITE,
+                border=ft.border.all(1, ft.Colors.BLACK12),
+                border_radius=10,
+            ),
             actions=[
-                ft.TextButton("Cancel", on_click=_close_dialog),
-                ft.TextButton("Delete", on_click=_confirm),
+                ft.Row(
+                    controls=[
+                        ft.TextButton(
+                            "Cancel",
+                            on_click=_close_dialog,
+                            style=ft.ButtonStyle(color=SECONDARY),
+                        ),
+                        ft.ElevatedButton(
+                            "Delete",
+                            on_click=_confirm,
+                            color=ON_COLOR,
+                            bgcolor=DANGER,
+                        ),
+                    ],
+                    alignment=ft.MainAxisAlignment.END,
+                    spacing=8,
+                )
             ],
             actions_alignment=ft.MainAxisAlignment.END,
             on_dismiss=lambda e: _close_dialog(),
@@ -404,7 +438,9 @@ class ReportList(ft.ReorderableListView):
             except Exception:
                 pass
 
-    def remove_action(self, detail_tile: ft.ExpansionTile, action_container: ft.Container):
+    def remove_action(
+        self, detail_tile: ft.ExpansionTile, action_container: ft.Container
+    ):
         """Remove an action container from a specific detail ExpansionTile."""
         try:
             if detail_tile is None or action_container is None:
@@ -459,11 +495,32 @@ class ReportList(ft.ReorderableListView):
 
         dlg = ft.AlertDialog(
             modal=True,
-            title=ft.Text("Confirm delete"),
-            content=ft.Text("Hapus action ini?"),
+            title=ft.Text("Confirm"),
+            content=ft.Container(
+                content=ft.Text("Delete this action?"),
+                padding=ft.padding.all(12),
+                bgcolor=ft.Colors.WHITE,
+                border=ft.border.all(1, ft.Colors.BLACK12),
+                border_radius=10,
+            ),
             actions=[
-                ft.TextButton("Cancel", on_click=_close_dialog),
-                ft.TextButton("Delete", on_click=_confirm),
+                ft.Row(
+                    controls=[
+                        ft.TextButton(
+                            "Cancel",
+                            on_click=_close_dialog,
+                            style=ft.ButtonStyle(color=SECONDARY),
+                        ),
+                        ft.ElevatedButton(
+                            "Delete",
+                            on_click=_confirm,
+                            color=ON_COLOR,
+                            bgcolor=DANGER,
+                        ),
+                    ],
+                    alignment=ft.MainAxisAlignment.END,
+                    spacing=8,
+                )
             ],
             actions_alignment=ft.MainAxisAlignment.END,
             on_dismiss=lambda e: _close_dialog(),
@@ -527,11 +584,32 @@ class ReportList(ft.ReorderableListView):
 
         dlg = ft.AlertDialog(
             modal=True,
-            title=ft.Text("Confirm delete"),
-            content=ft.Text("Hapus issue ini?"),
+            title=ft.Text("Confirm"),
+            content=ft.Container(
+                content=ft.Text("Delete this issue?"),
+                padding=ft.padding.all(12),
+                bgcolor=ft.Colors.WHITE,
+                border=ft.border.all(1, ft.Colors.BLACK12),
+                border_radius=10,
+            ),
             actions=[
-                ft.TextButton("Cancel", on_click=_close_dialog),
-                ft.TextButton("Delete", on_click=_confirm),
+                ft.Row(
+                    controls=[
+                        ft.TextButton(
+                            "Cancel",
+                            on_click=_close_dialog,
+                            style=ft.ButtonStyle(color=SECONDARY),
+                        ),
+                        ft.ElevatedButton(
+                            "Delete",
+                            on_click=_confirm,
+                            color=ON_COLOR,
+                            bgcolor=DANGER,
+                        ),
+                    ],
+                    alignment=ft.MainAxisAlignment.END,
+                    spacing=8,
+                )
             ],
             actions_alignment=ft.MainAxisAlignment.END,
             on_dismiss=lambda e: _close_dialog(),
@@ -561,6 +639,7 @@ class ReportList(ft.ReorderableListView):
         card_column.controls.append(
             self._make_issue_description_for_card(
                 text,
+                index,
                 column_ref,
                 card_ref,
                 issue_textfield_ref=issue_textfield_ref,
@@ -571,10 +650,21 @@ class ReportList(ft.ReorderableListView):
             ref=card_ref,
             key=key,
             margin=ft.margin.only(top=5, bottom=5, left=0, right=0),
-            color=self._get_color(index),
-            elevation=5,
+            color=ft.Colors.WHITE,
+            shape=ft.RoundedRectangleBorder(radius=10),
+            clip_behavior=ft.ClipBehavior.ANTI_ALIAS,
+            elevation=4,
+            shadow_color=self._get_color(index),
             content=ft.Container(
-                padding=ft.padding.only(left=10, right=30, top=8, bottom=8),
+                border=ft.Border(
+                    left=ft.BorderSide(4, self._get_color(index)),
+                    top=ft.BorderSide(1, ft.Colors.BLACK26),
+                    right=ft.BorderSide(1, ft.Colors.BLACK26),
+                    bottom=ft.BorderSide(1, ft.Colors.BLACK26),
+                ),
+                border_radius=10,
+                clip_behavior=ft.ClipBehavior.ANTI_ALIAS,
+                padding=ft.padding.only(left=8, right=30, top=8, bottom=8),
                 content=card_column,
             ),
         )
@@ -582,6 +672,7 @@ class ReportList(ft.ReorderableListView):
     def _make_issue_description_for_card(
         self,
         text: str,
+        index: int,
         column_ref: ft.Ref[ft.Column],
         card_ref: ft.Ref[ft.Card],
         *,
@@ -590,8 +681,8 @@ class ReportList(ft.ReorderableListView):
         add_detail_item = ft.PopupMenuItem(
             content=ft.Row(
                 [
-                    ft.Icon(ft.Icons.ADD, color=ft.Colors.GREEN),
-                    ft.Text("Add Detail"),
+                    ft.Icon(ft.Icons.ADD, color=SUCCESS),
+                    ft.Text("Add detail"),
                 ]
             ),
             disabled=(str(text or "").strip() == ""),
@@ -626,7 +717,8 @@ class ReportList(ft.ReorderableListView):
                     ft.TextField(
                         ref=issue_textfield_ref,
                         value=str(text),
-                        label="Description",
+                        label="Issue",
+                        hint_text="Issue description...",
                         label_style=ft.TextStyle(
                             size=11,
                             bgcolor=ft.Colors.WHITE,
@@ -635,42 +727,48 @@ class ReportList(ft.ReorderableListView):
                         text_align=ft.TextAlign.LEFT,
                         multiline=False,
                         border=ft.InputBorder.OUTLINE,
-                        border_color=ft.Colors.WHITE,
+                        border_color=ft.Colors.BLACK12,
                         border_radius=8,
                         bgcolor=ft.Colors.WHITE,
                         expand=True,
-                        height=30,
-                        content_padding=ft.padding.only(
-                            left=10, right=0, top=0, bottom=20
-                        ),
+                        height=34,
+                        content_padding=ft.padding.symmetric(horizontal=10, vertical=8),
                         on_change=_sync_add_detail_enabled,
                         on_blur=_sync_add_detail_enabled,
                     ),
-                    ft.PopupMenuButton(
-                        width=30,
-                        height=30,
-                        icon=ft.Icon(ft.Icons.MORE_VERT, size=20),
-                        padding=ft.padding.only(left=3, right=15, top=3, bottom=15),
-                        items=[
-                            add_detail_item,
-                            ft.PopupMenuItem(
-                                content=ft.Row(
-                                    [
-                                        ft.Icon(ft.Icons.REMOVE, color=ft.Colors.RED),
-                                        ft.Text("Remove"),
-                                    ]
+                    ft.Container(
+                        width=34,
+                        height=34,
+                        alignment=ft.alignment.center,
+                        content=ft.PopupMenuButton(
+                            width=34,
+                            height=34,
+                            icon=ft.Icon(ft.Icons.MORE_VERT, size=18, color=SECONDARY),
+                            padding=ft.padding.all(0),
+                            items=[
+                                add_detail_item,
+                                ft.PopupMenuItem(
+                                    content=ft.Row(
+                                        [
+                                            ft.Icon(ft.Icons.REMOVE, color=DANGER),
+                                            ft.Text("Remove"),
+                                        ]
+                                    ),
+                                    on_click=lambda e, r=card_ref: (
+                                        self.confirm_remove_issue(
+                                            e.control.page, r.current
+                                        )
+                                        if getattr(r, "current", None) is not None
+                                        else None
+                                    ),
                                 ),
-                                on_click=lambda e, r=card_ref: (
-                                    self.confirm_remove_issue(e.control.page, r.current)
-                                    if getattr(r, "current", None) is not None
-                                    else None
-                                ),
-                            ),
-                        ],
+                            ],
+                        ),
                     ),
                 ],
                 spacing=0,
-                alignment=ft.MainAxisAlignment.SPACE_AROUND,
+                alignment=ft.MainAxisAlignment.START,
+                vertical_alignment=ft.CrossAxisAlignment.CENTER,
             ),
             padding=ft.padding.only(left=0, right=0, top=0, bottom=0),
         )
@@ -692,7 +790,7 @@ class ReportList(ft.ReorderableListView):
         add_action_item = ft.PopupMenuItem(
             content=ft.Row(
                 [
-                    ft.Icon(ft.Icons.ADD, color=ft.Colors.GREEN),
+                    ft.Icon(ft.Icons.ADD, color=SUCCESS),
                     ft.Text("Add action"),
                 ]
             ),
@@ -735,7 +833,7 @@ class ReportList(ft.ReorderableListView):
                     ft.TextField(
                         ref=_detail_tf_ref,
                         value=str(text),
-                        label="Detail Description",
+                        label="Detail description",
                         label_style=ft.TextStyle(
                             size=11,
                             bgcolor=ft.Colors.WHITE,
@@ -755,37 +853,45 @@ class ReportList(ft.ReorderableListView):
                         on_change=_sync_add_action_enabled,
                         on_blur=_sync_add_action_enabled,
                     ),
-                    ft.PopupMenuButton(
+                    ft.Container(
                         width=30,
                         height=30,
-                        icon=ft.Icon(ft.Icons.MORE_VERT, size=20),
-                        padding=ft.padding.only(left=3, right=15, top=3, bottom=15),
-                        items=[
-                            add_action_item,
-                            ft.PopupMenuItem(
-                                content=ft.Row(
-                                    [
-                                        ft.Icon(ft.Icons.REMOVE, color=ft.Colors.RED),
-                                        ft.Text("Remove"),
-                                    ]
+                        alignment=ft.alignment.center,
+                        content=ft.PopupMenuButton(
+                            width=30,
+                            height=30,
+                            icon=ft.Icon(ft.Icons.MORE_VERT, size=18, color=SECONDARY),
+                            padding=ft.padding.all(0),
+                            items=[
+                                add_action_item,
+                                ft.PopupMenuItem(
+                                    content=ft.Row(
+                                        [
+                                            ft.Icon(ft.Icons.REMOVE, color=DANGER),
+                                            ft.Text("Remove"),
+                                        ]
+                                    ),
+                                    on_click=lambda e, r=tile_ref, col=issue_column: (
+                                        self.confirm_remove_detail(
+                                            e.control.page, col, r.current
+                                        )
+                                        if getattr(r, "current", None) is not None
+                                        else None
+                                    ),
                                 ),
-                                on_click=lambda e, r=tile_ref, col=issue_column: (
-                                    self.confirm_remove_detail(
-                                        e.control.page, col, r.current
-                                    )
-                                    if getattr(r, "current", None) is not None
-                                    else None
-                                ),
-                            ),
-                        ],
+                            ],
+                        ),
                     ),
                 ],
-                spacing=0,
-                alignment=ft.MainAxisAlignment.SPACE_AROUND,
+                spacing=8,
+                alignment=ft.MainAxisAlignment.START,
+                vertical_alignment=ft.CrossAxisAlignment.CENTER,
             ),
         )
 
-    def _on_detail_tile_change(self, e: ft.ControlEvent, tile_ref: ft.Ref[ft.ExpansionTile]):
+    def _on_detail_tile_change(
+        self, e: ft.ControlEvent, tile_ref: ft.Ref[ft.ExpansionTile]
+    ):
         """Persist expanded/collapsed state across client reconnect/minimize."""
         try:
             tile = getattr(tile_ref, "current", None)
@@ -828,7 +934,7 @@ class ReportList(ft.ReorderableListView):
                     ft.TextField(
                         ref=action_textfield_ref,
                         value=str(text),
-                        label="Action Description",
+                        label="Action description",
                         label_style=ft.TextStyle(
                             size=11,
                             bgcolor=ft.Colors.WHITE,
@@ -846,37 +952,53 @@ class ReportList(ft.ReorderableListView):
                             left=10, right=0, top=0, bottom=20
                         ),
                     ),
-                    ft.PopupMenuButton(
+                    ft.Container(
                         width=30,
                         height=30,
-                        icon=ft.Icon(ft.Icons.MORE_VERT, size=20),
-                        padding=ft.padding.only(left=3, right=15, top=3, bottom=15),
-                        items=[
-                            ft.PopupMenuItem(
-                                content=ft.Row(
-                                    [
-                                        ft.Icon(ft.Icons.REMOVE, color=ft.Colors.RED),
-                                        ft.Text("Remove"),
-                                    ]
+                        alignment=ft.alignment.center,
+                        content=ft.PopupMenuButton(
+                            width=30,
+                            height=30,
+                            icon=ft.Icon(ft.Icons.MORE_VERT, size=18, color=SECONDARY),
+                            padding=ft.padding.all(0),
+                            items=[
+                                ft.PopupMenuItem(
+                                    content=ft.Row(
+                                        [
+                                            ft.Icon(ft.Icons.REMOVE, color=DANGER),
+                                            ft.Text("Remove"),
+                                        ]
+                                    ),
+                                    on_click=lambda e,
+                                    ar=action_ref,
+                                    t=detail_tile,
+                                    tr=tile_ref: (
+                                        self.confirm_remove_action(
+                                            e.control.page,
+                                            (
+                                                t
+                                                if t is not None
+                                                else getattr(tr, "current", None)
+                                            ),
+                                            ar.current,
+                                        )
+                                        if ar.current is not None
+                                        and (
+                                            t is not None
+                                            or getattr(tr, "current", None) is not None
+                                        )
+                                        else None
+                                    ),
                                 ),
-                                on_click=lambda e, ar=action_ref, t=detail_tile, tr=tile_ref: (
-                                    self.confirm_remove_action(
-                                        e.control.page,
-                                        (t if t is not None else getattr(tr, "current", None)),
-                                        ar.current,
-                                    )
-                                    if ar.current is not None
-                                    and (t is not None or getattr(tr, "current", None) is not None)
-                                    else None
-                                ),
-                            ),
-                        ],
+                            ],
+                        ),
                     ),
                 ],
-                spacing=0,
-                alignment=ft.MainAxisAlignment.SPACE_AROUND,
+                spacing=8,
+                alignment=ft.MainAxisAlignment.START,
+                vertical_alignment=ft.CrossAxisAlignment.CENTER,
             ),
         )
 
     def _get_color(self, i):
-        return ft.Colors.RED_200 if i % 2 == 0 else ft.Colors.BLUE_200
+        return PRIMARY if i % 2 == 0 else SECONDARY

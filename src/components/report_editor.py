@@ -6,6 +6,7 @@ from src.components.report_list_view import ReportList
 from src.components.target_editor import TargetEditorDialog
 from src.services.history_service import save_report_history_csv
 from src.utils.helpers import data_app_path
+from src.utils.theme import DANGER, ON_COLOR, PRIMARY, SECONDARY, SUCCESS
 from src.utils.ui_helpers import resolve_page, snack
 
 
@@ -14,6 +15,7 @@ class ReportEditor(ft.Container):
         self,
         on_report_table=None,
         get_report_table_text=None,
+        get_include_table=None,
         get_metrics_rows=None,
         set_metrics_targets=None,
         get_selected_shift=None,
@@ -27,6 +29,7 @@ class ReportEditor(ft.Container):
         kwargs.setdefault("expand", True)
         self._report_table_cb = on_report_table
         self._get_report_table_text_cb = get_report_table_text
+        self._get_include_table_cb = get_include_table
         self._get_metrics_rows_cb = get_metrics_rows
         self._set_metrics_targets_cb = set_metrics_targets
         self._get_selected_shift_cb = get_selected_shift
@@ -35,78 +38,71 @@ class ReportEditor(ft.Container):
         self._get_date_field_cb = get_date_field
         self._get_user_cb = get_user
 
-        self.include_table_switch = ft.Switch(
-            label="Include Table",
-            label_style=ft.TextStyle(size=20, italic=True),
-            label_position=ft.LabelPosition.RIGHT,
-            width=100,
-            height=20,
-            value=True,
-            active_track_color=ft.Colors.GREEN,
-        )
-
         header = ft.Container(
-            bgcolor=ft.Colors.SURFACE_CONTAINER_HIGHEST,
-            padding=ft.padding.symmetric(horizontal=10, vertical=10),
+            bgcolor=ft.Colors.WHITE,
+            padding=ft.padding.symmetric(horizontal=10, vertical=8),
             margin=ft.margin.only(bottom=10),
+            border=ft.border.all(1, ft.Colors.BLACK12),
+            border_radius=10,
             content=ft.Row(
                 controls=[
                     ft.Row(
                         controls=[
                             ft.IconButton(
+                                icon=ft.Icons.QR_CODE,
+                                icon_color=ON_COLOR,
+                                bgcolor=SECONDARY,
+                                icon_size=18,
+                                tooltip="Show QR code",
+                                on_click=self._on_show_qr_code,
+                            ),
+                            ft.IconButton(
                                 icon=ft.Icons.EDIT,
-                                icon_color=ft.Colors.WHITE,
-                                bgcolor=ft.Colors.BLUE_GREY,
-                                icon_size=20,
-                                tooltip="Edit Target",
+                                icon_color=ON_COLOR,
+                                bgcolor=SECONDARY,
+                                icon_size=18,
+                                tooltip="Edit target",
                                 on_click=self._on_show_target_editor,
                             ),
                             ft.IconButton(
                                 icon=ft.Icons.TABLE_ROWS,
-                                icon_color=ft.Colors.WHITE,
-                                bgcolor=ft.Colors.PURPLE,
-                                icon_size=20,
-                                tooltip="Show History Table",
+                                icon_color=ON_COLOR,
+                                bgcolor=SECONDARY,
+                                icon_size=18,
+                                tooltip="Show history",
                                 on_click=self._on_show_history_table,
                             ),
-                            ft.IconButton(
-                                icon=ft.Icons.QR_CODE,
-                                icon_color=ft.Colors.WHITE,
-                                bgcolor=ft.Colors.ORANGE,
-                                icon_size=20,
-                                tooltip="Show QR Code",
-                                on_click=self._on_show_qr_code,
-                            ),
-                            self.include_table_switch,
                         ],
+                        spacing=8,
                     ),
                     ft.Row(
                         controls=[
                             ft.IconButton(
                                 icon=ft.Icons.ADD_ROUNDED,
-                                icon_color=ft.Colors.WHITE,
-                                bgcolor=ft.Colors.LIGHT_GREEN,
-                                icon_size=20,
-                                tooltip="Add Card",
+                                icon_color=ON_COLOR,
+                                bgcolor=SUCCESS,
+                                icon_size=18,
+                                tooltip="Add card",
                                 on_click=self._on_add_card,
                             ),
                             ft.IconButton(
                                 icon=ft.Icons.CLEAR,
-                                icon_color=ft.Colors.WHITE,
-                                bgcolor=ft.Colors.RED,
-                                icon_size=20,
-                                tooltip="Clear All",
+                                icon_color=ON_COLOR,
+                                bgcolor=DANGER,
+                                icon_size=18,
+                                tooltip="Clear all",
                                 on_click=self._on_clear_all,
                             ),
                             ft.IconButton(
                                 icon=ft.Icons.SAVE,
-                                icon_color=ft.Colors.WHITE,
-                                bgcolor=ft.Colors.BLUE,
-                                icon_size=20,
-                                tooltip="Save Report",
+                                icon_color=ON_COLOR,
+                                bgcolor=PRIMARY,
+                                icon_size=18,
+                                tooltip="Save report",
                                 on_click=self._on_save_report,
                             ),
                         ],
+                        spacing=8,
                     ),
                 ],
                 expand=True,
@@ -157,7 +153,7 @@ class ReportEditor(ft.Container):
         try:
             cards = list(getattr(self.report_list, "controls", None) or [])
             if not cards:
-                snack(page, "Tidak ada card untuk disimpan", kind="warning")
+                snack(page, "No cards to save", kind="warning")
                 return
 
             # Sidebar metadata (best-effort)
@@ -224,7 +220,7 @@ class ReportEditor(ft.Container):
                 kind = "error"
             snack(page, msg, kind=kind)
         except Exception as ex:
-            snack(page, f"Gagal simpan report: {ex}", kind="error")
+            snack(page, f"Failed to save report: {ex}", kind="error")
 
     def _on_add_card(self, e):
         try:
@@ -262,11 +258,32 @@ class ReportEditor(ft.Container):
 
         dlg = ft.AlertDialog(
             modal=True,
-            title=ft.Text("Confirm delete"),
-            content=ft.Text("Hapus semua card?"),
+            title=ft.Text("Confirm"),
+            content=ft.Container(
+                content=ft.Text("Clear all cards?"),
+                padding=ft.padding.all(12),
+                bgcolor=ft.Colors.WHITE,
+                border=ft.border.all(1, ft.Colors.BLACK12),
+                border_radius=10,
+            ),
             actions=[
-                ft.TextButton("Cancel", on_click=_close_dialog),
-                ft.TextButton("Delete", on_click=_confirm),
+                ft.Row(
+                    controls=[
+                        ft.TextButton(
+                            "Cancel",
+                            on_click=_close_dialog,
+                            style=ft.ButtonStyle(color=SECONDARY),
+                        ),
+                        ft.ElevatedButton(
+                            "Clear",
+                            on_click=_confirm,
+                            color=ON_COLOR,
+                            bgcolor=DANGER,
+                        ),
+                    ],
+                    alignment=ft.MainAxisAlignment.END,
+                    spacing=8,
+                )
             ],
             actions_alignment=ft.MainAxisAlignment.END,
             on_dismiss=lambda _e: _close_dialog(),
@@ -327,12 +344,12 @@ class ReportEditor(ft.Container):
             report_text = ""
 
         payload = report_text
+        include_table = True
         try:
-            include_table = bool(
-                getattr(getattr(self, "include_table_switch", None), "value", False)
-            )
+            if callable(getattr(self, "_get_include_table_cb", None)):
+                include_table = bool(self._get_include_table_cb())
         except Exception:
-            include_table = False
+            include_table = True
 
         if include_table and callable(getattr(self, "_get_report_table_text_cb", None)):
             try:
@@ -344,7 +361,9 @@ class ReportEditor(ft.Container):
             except Exception:
                 pass
 
-        meta_line = (f"*{func_location.upper()} {link_up[-2:]} | {date_field} | {shift}*").strip()
+        meta_line = (
+            f"*{func_location.upper()} {link_up[-2:]} | {date_field} | {shift}*"
+        ).strip()
         payload = f"{meta_line}\n{payload}".strip()
 
         QrCodeDialog(page=page, payload=payload).show()

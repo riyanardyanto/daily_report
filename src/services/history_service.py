@@ -133,16 +133,16 @@ def _upgrade_header_if_needed(
 
     except PermissionError as ex:
         msg = (
-            "Gagal upgrade format history.csv. Kemungkinan file sedang terbuka (mis. Excel).\n"
-            f"Tutup file ini dulu: {csv_path} ({type(ex).__name__})"
+            "Failed to upgrade history.csv format. The file may be open (e.g., in Excel).\n"
+            f"Close this file first: {csv_path} ({type(ex).__name__})"
         )
         return False, msg
 
     except OSError as ex:
         if getattr(ex, "winerror", None) in (32, 33):
             msg = (
-                "Gagal upgrade format history.csv karena file sedang dipakai aplikasi lain (mis. Excel).\n"
-                f"Tutup file ini dulu: {csv_path} ({type(ex).__name__})"
+                "Failed to upgrade history.csv format because the file is in use by another app (e.g., Excel).\n"
+                f"Close this file first: {csv_path} ({type(ex).__name__})"
             )
             return False, msg
         raise
@@ -167,15 +167,15 @@ def save_report_history_csv(
     """
 
     if not cards:
-        return False, "Tidak ada card untuk disimpan"
+        return False, "No cards to save"
 
     csv_path.parent.mkdir(parents=True, exist_ok=True)
 
     # Proactively detect Excel lock (so we can warn even if Windows sharing might allow writes).
     if csv_path.exists() and is_file_locked_windows(csv_path):
         msg = (
-            "Tidak bisa simpan karena history.csv sedang terbuka/terkunci (mis. di Excel).\n"
-            f"Tutup file ini dulu: {csv_path}"
+            "Can't save because history.csv is open/locked (e.g., in Excel).\n"
+            f"Close this file first: {csv_path}"
         )
         return False, msg
 
@@ -197,7 +197,7 @@ def save_report_history_csv(
 
     ok, err = _upgrade_header_if_needed(csv_path, HISTORY_FIELDNAMES)
     if not ok:
-        return False, str(err or "Gagal upgrade format history.csv")
+        return False, str(err or "Failed to upgrade history.csv format")
 
     try:
         write_header = not csv_path.exists()
@@ -211,19 +211,19 @@ def save_report_history_csv(
 
     except PermissionError as ex:
         msg = (
-            "Gagal simpan report: history.csv tidak bisa ditulis.\n"
-            "Kemungkinan file sedang terbuka (mis. di Excel).\n"
-            f"Tutup file ini dulu: {csv_path} ({type(ex).__name__})"
+            "Failed to save report: history.csv is not writable.\n"
+            "It may be open (e.g., in Excel).\n"
+            f"Close this file first: {csv_path} ({type(ex).__name__})"
         )
         return False, msg
 
     except OSError as ex:
         if getattr(ex, "winerror", None) in (32, 33):
             msg = (
-                "Gagal simpan report: history.csv sedang dipakai aplikasi lain (mis. Excel).\n"
-                f"Tutup file ini dulu: {csv_path} ({type(ex).__name__})"
+                "Failed to save report: history.csv is in use by another app (e.g., Excel).\n"
+                f"Close this file first: {csv_path} ({type(ex).__name__})"
             )
             return False, msg
         raise
 
-    return True, f"Report tersimpan: {csv_path}"
+    return True, f"Report saved: {csv_path}"

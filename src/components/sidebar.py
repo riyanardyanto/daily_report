@@ -7,6 +7,7 @@ import flet as ft
 from src.components.settings_dialog import SettingsDialog
 from src.services.config_service import get_application_config
 from src.utils.helpers import load_settings_options
+from src.utils.theme import ON_COLOR, PRIMARY, SECONDARY
 
 
 class Sidebar(ft.Container):
@@ -48,6 +49,20 @@ class Sidebar(ft.Container):
             fit=ft.ImageFit.CONTAIN,
         )
 
+        title_block = ft.Column(
+            controls=[
+                self.logo,
+                ft.Text(
+                    "Daily Report",
+                    size=14,
+                    weight=ft.FontWeight.BOLD,
+                    text_align=ft.TextAlign.CENTER,
+                ),
+            ],
+            horizontal_alignment=ft.CrossAxisAlignment.CENTER,
+            spacing=6,
+        )
+
         # Dropdown Link Up
         self.link_up = ft.Dropdown(
             options=[ft.dropdown.Option(opt) for opt in link_up_options],
@@ -74,9 +89,9 @@ class Sidebar(ft.Container):
             content_padding=10,
         )
 
-        # TextField untuk tampilan tanggal
+        # Date display TextField
         self.date_field = ft.TextField(
-            label="Tanggal",
+            label="Date",
             label_style=ft.TextStyle(size=12),
             hint_text="yyyy-mm-dd",
             read_only=True,
@@ -94,15 +109,15 @@ class Sidebar(ft.Container):
             on_change=self.on_date_picker_change,
         )
 
-        # Icon kalender untuk membuka picker
+        # Calendar icon to open picker
         calendar_icon = ft.IconButton(
             icon=ft.Icons.CALENDAR_MONTH,
             icon_size=20,
-            tooltip="Pilih Tanggal",
+            tooltip="Choose date",
             on_click=lambda e: self.page.open(self.date_picker),
         )
 
-        # tambahkan dropdown shift ke sidebar shifts = ["Shift 1", "Shift 2", "Shift 3"]
+        # Shift dropdown (Shift 1/2/3)
         self.shift = ft.Dropdown(
             options=[
                 ft.dropdown.Option("Shift 1"),
@@ -121,8 +136,8 @@ class Sidebar(ft.Container):
         self.get_data_button = ft.ElevatedButton(
             text="Get Data",
             width=140,
-            color=ft.Colors.WHITE,
-            bgcolor=ft.Colors.BLUE_700,
+            color=ON_COLOR,
+            bgcolor=PRIMARY,
         )
 
         # Entry user
@@ -140,8 +155,8 @@ class Sidebar(ft.Container):
         self.settings_button = ft.ElevatedButton(
             text="Settings",
             width=140,
-            color=ft.Colors.WHITE,
-            bgcolor=ft.Colors.GREEN_700,
+            color=ON_COLOR,
+            bgcolor=SECONDARY,
             on_click=self.on_settings_click,
         )
 
@@ -150,8 +165,9 @@ class Sidebar(ft.Container):
             [
                 ft.Column(
                     [
-                        self.logo,
-                        ft.Divider(height=20, color=ft.Colors.RED_200),
+                        title_block,
+                        ft.Divider(height=16, color=ft.Colors.BLACK12),
+                        ft.Text("Filters", size=11, weight=ft.FontWeight.W_600),
                         self.link_up,
                         self.func_location,
                         ft.Row(
@@ -160,13 +176,14 @@ class Sidebar(ft.Container):
                                 calendar_icon,
                             ],
                             alignment=ft.MainAxisAlignment.CENTER,
-                            spacing=0,
+                            spacing=6,
                         ),
                         self.shift,
                         self.get_data_button,
-                        ft.Divider(height=10, color=ft.Colors.RED_200),
+                        ft.Divider(height=12, color=ft.Colors.BLACK12),
+                        ft.Text("User", size=11, weight=ft.FontWeight.W_600),
                         self.user,
-                        ft.Divider(height=20, color=ft.Colors.RED_200),
+                        ft.Divider(height=16, color=ft.Colors.BLACK12),
                         self.settings_button,
                     ],
                     alignment=ft.MainAxisAlignment.CENTER,
@@ -196,9 +213,11 @@ class Sidebar(ft.Container):
         )
 
         # Properti Container sidebar
-        self.width = 160
-        self.bgcolor = ft.Colors.LIGHT_BLUE_50
-        self.padding = ft.padding.symmetric(horizontal=10, vertical=20)
+        self.width = 220
+        self.bgcolor = ft.Colors.WHITE
+        self.border = ft.border.all(1, ft.Colors.BLACK12)
+        self.border_radius = 10
+        self.padding = ft.padding.symmetric(horizontal=12, vertical=14)
         self.expand = False
 
     def on_date_picker_change(self, e: ft.ControlEvent):

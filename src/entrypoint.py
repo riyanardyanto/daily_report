@@ -10,19 +10,29 @@ from src.utils.helpers import get_data_app_dir, resource_path
 
 
 def _main(page: ft.Page) -> None:
-
-
     page.title = "Daily Report Dashboard"
     page.window.icon = "icon_windows.ico"
-    page.padding = 0
+    # Use a small global padding so content doesn't hug the window edges.
+    page.padding = 8
     page.theme = ft.Theme(font_family="Verdana")
     page.theme_mode = ft.ThemeMode.LIGHT
     page.theme.page_transitions.windows = "cupertino"
     page.fonts = {"Pacifico": "Pacifico-Regular.ttf"}
-    page.bgcolor = ft.Colors.BLUE_GREY_200
+    # Softer neutral background improves contrast and reduces visual noise.
+    page.bgcolor = ft.Colors.BLUE_GREY_50
 
-    dashboard = DashboardApp()
+    dashboard = DashboardApp(page)
     page.add(dashboard)
+
+    def _on_resize(_e=None):
+        try:
+            dashboard.apply_responsive_layout(getattr(page, "width", None))
+        except Exception:
+            pass
+
+    # Keep the dashboard responsive.
+    page.on_resize = _on_resize
+    _on_resize()
     page.update()
 
 
