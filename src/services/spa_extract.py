@@ -121,14 +121,6 @@ def _split_segments_by_marker(
     except Exception:
         return []
 
-    from tabulate import tabulate
-
-    with open("x-debug_segments.txt", "w", encoding="utf-8") as f:
-        for i, seg in enumerate(segments):
-            f.write(f"Segment {i}:\n")
-            f.write(tabulate(seg, headers="keys", tablefmt="psql"))
-            f.write("\n\n")
-
     return segments
 
 
