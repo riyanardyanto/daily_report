@@ -12,4 +12,10 @@ SECONDARY = ft.Colors.BLUE_GREY_600
 SUCCESS = ft.Colors.GREEN_600
 DANGER = ft.Colors.RED_600
 
+# Non-destructive, informational accent.
+INFO = ft.Colors.INDIGO_600
+
+# Non-destructive, warning accent.
+WARNING = ft.Colors.AMBER_600
+
 SWITCH_ACTIVE = PRIMARY

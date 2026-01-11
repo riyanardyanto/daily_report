@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import csv
+from collections import deque
 from pathlib import Path
 
 import flet as ft
@@ -18,12 +19,14 @@ class HistoryTableDialog:
         title: str = "History Table",
         hidden_columns: set[str] | None = None,
         export_default_name: str = "history_export.csv",
+        max_rows: int = 1000,
     ):
         self.page = page
         self.csv_path = Path(csv_path)
         self.title = title
         self.hidden_columns = set(hidden_columns or set())
         self.export_default_name = export_default_name
+        self.max_rows = int(max_rows or 0) if max_rows is not None else 1000
 
         self._dlg: ft.AlertDialog | None = None
         self._prev_on_resize = None
@@ -38,6 +41,31 @@ class HistoryTableDialog:
 
         self._file_picker = ft.FilePicker()
 
+        self._total_rows: int = 0
+        self._base_rows_data: list[dict] = []
+        self._title_text: ft.Text | None = None
+
+        # Column sizing rules:
+        # - issue/detail/action: stretch equally to fill remaining width
+        # - everything else: fixed width
+        self._stretch_columns = {"issue", "detail", "action"}
+        self._fixed_col_widths: dict[str, int] = {
+            "save_id": 160,
+            "saved_at": 150,
+            "link_up": 45,
+            "func_location": 40,
+            "date_field": 70,
+            "shift": 40,
+            "user": 55,
+            "card_index": 70,
+            "detail_index": 85,
+            "action_index": 90,
+        }
+        self._default_fixed_width_px = 120
+        self._stretch_width_px = 260
+        self._min_stretch_width_px = 200
+        self._width_padding_px = 48
+
     def show(self):
         page = self.page
         if page is None:
@@ -51,7 +79,17 @@ class HistoryTableDialog:
             with self.csv_path.open("r", newline="", encoding="utf-8-sig") as f:
                 reader = csv.DictReader(f)
                 fieldnames = list(reader.fieldnames or [])
-                rows_data = list(reader)
+                # Stream rows so memory doesn't grow with the file size.
+                max_rows = self.max_rows if self.max_rows > 0 else 1000
+                tail = deque(maxlen=max_rows)
+                total_rows = 0
+                for row in reader:
+                    total_rows += 1
+                    tail.append(row)
+                rows_data = list(tail)
+
+            self._total_rows = int(total_rows)
+            self._base_rows_data = list(rows_data)
 
             if not fieldnames:
                 snack(page, "History CSV has no header", kind="warning")
@@ -76,48 +114,74 @@ class HistoryTableDialog:
 
             self._filter_tf = ft.TextField(
                 label="Search",
-                hint_text="Type to search...",
+                hint_text="Type to search, then press Enter...",
                 text_size=12,
                 dense=True,
-                on_change=self._apply_filter,
+                on_submit=self._apply_filter,
+                expand=True,
             )
 
             self._dt = ft.DataTable(
                 columns=[
-                    ft.DataColumn(ft.Text(name, size=11, weight=ft.FontWeight.W_600))
+                    ft.DataColumn(
+                        ft.Container(
+                            content=ft.Text(
+                                (
+                                    {
+                                        "link_up": "lu",
+                                        "func_location": "fl",
+                                        "date_field": "date",
+                                        "shift": "shift",
+                                    }.get(name, name)
+                                ).upper(),
+                                size=11,
+                                weight=ft.FontWeight.W_600,
+                            ),
+                            width=self._get_column_width(name),
+                        )
+                    )
                     for name in self._fieldnames
                 ],
                 rows=self._build_rows(self._filtered_rows_data),
                 border=ft.border.all(1, ft.Colors.BLACK12),
                 heading_row_color=ft.Colors.BLUE_GREY_50,
-                data_row_max_height=140,
+                data_row_max_height=100,
                 data_row_min_height=40,
                 heading_row_height=34,
                 vertical_lines=ft.BorderSide(1, ft.Colors.BLACK12),
                 horizontal_lines=ft.BorderSide(1, ft.Colors.BLACK12),
-                column_spacing=10,
+                column_spacing=15,
                 width=900,
             )
 
             self._content_container = ft.Container(
                 content=ft.Column(
                     controls=[
-                        ft.Text(str(self.csv_path), size=11, italic=True),
-                        self._filter_tf,
+                        ft.Row(
+                            [
+                                self._filter_tf,
+                                ft.Text(str(self.csv_path), size=11, italic=True),
+                            ],
+                        ),
                         ft.Container(
-                            content=ft.Row(
-                                controls=[self._dt],
+                            content=ft.Column(
+                                controls=[
+                                    ft.Row(
+                                        controls=[self._dt],
+                                        scroll=ft.ScrollMode.AUTO,
+                                        alignment=ft.MainAxisAlignment.END,
+                                    )
+                                ],
                                 scroll=ft.ScrollMode.AUTO,
                                 expand=True,
-                                alignment=ft.MainAxisAlignment.END,
                             ),
                             expand=True,
                         ),
                     ],
                     expand=True,
                     spacing=8,
-                    scroll=ft.ScrollMode.AUTO,
-                    alignment=ft.MainAxisAlignment.SPACE_AROUND,
+                    scroll=None,
+                    alignment=ft.MainAxisAlignment.START,
                 ),
                 width=1200,
                 height=650,
@@ -128,9 +192,13 @@ class HistoryTableDialog:
                 expand=True,
             )
 
+            self._title_text = ft.Text(
+                f"{self.title} (showing {len(self._rows_data)} of {total_rows} rows)"
+            )
+
             self._dlg = ft.AlertDialog(
                 modal=True,
-                title=ft.Text(f"{self.title} ({len(self._rows_data)} rows)"),
+                title=self._title_text,
                 content=self._content_container,
                 actions=[
                     ft.Row(
@@ -161,6 +229,7 @@ class HistoryTableDialog:
                 pass
 
             self._apply_responsive_size()
+            self._apply_column_widths()
 
             try:
                 page.open(self._dlg)
@@ -171,6 +240,25 @@ class HistoryTableDialog:
 
         except Exception as ex:
             snack(page, f"Failed to read history.csv: {ex}", kind="error")
+
+    def _read_filtered_rows(self, q: str) -> tuple[int, list[dict]]:
+        """Stream-read the full CSV and return (matches_total, last_matches)."""
+        q = str(q or "").strip()
+        if not q:
+            return 0, []
+
+        max_rows = self.max_rows if self.max_rows > 0 else 1000
+        tail = deque(maxlen=max_rows)
+        matches_total = 0
+
+        with self.csv_path.open("r", newline="", encoding="utf-8-sig") as f:
+            reader = csv.DictReader(f)
+            for row in reader:
+                if self._row_matches(row, q):
+                    matches_total += 1
+                    tail.append(row)
+
+        return matches_total, list(tail)
 
     def close(self, _e=None):
         page = self.page
@@ -259,22 +347,124 @@ class HistoryTableDialog:
                     value = str((row_obj or {}).get(col, "") or "")
                 except Exception:
                     value = ""
-                cells.append(ft.DataCell(ft.Text(value, size=11)))
+                cells.append(
+                    ft.DataCell(
+                        ft.Container(
+                            content=ft.Text(value, size=11),
+                            width=self._get_column_width(col),
+                        )
+                    )
+                )
             out_rows.append(ft.DataRow(cells=cells))
         return out_rows
 
     def _apply_filter(self, _e=None):
         try:
             q = str(getattr(self._filter_tf, "value", "") or "").strip()
-            self._filtered_rows_data = [
-                r for r in self._rows_data if self._row_matches(r, q)
-            ]
+
+            # Empty query: restore the initial tail view.
+            if not q:
+                self._rows_data = list(self._base_rows_data)
+                self._filtered_rows_data = list(self._base_rows_data)
+                if self._title_text is not None:
+                    self._title_text.value = f"{self.title} (showing {len(self._rows_data)} of {self._total_rows} rows)"
+                if self._dlg is not None:
+                    try:
+                        self._dlg.update()
+                    except Exception:
+                        pass
+            else:
+                # Option A: stream-read the full CSV and filter across the entire file.
+                matches_total, matches_tail = self._read_filtered_rows(q)
+                self._filtered_rows_data = list(matches_tail)
+                if self._title_text is not None:
+                    self._title_text.value = f"{self.title} (showing {len(self._filtered_rows_data)} of {matches_total} matches)"
+                if self._dlg is not None:
+                    try:
+                        self._dlg.update()
+                    except Exception:
+                        pass
+
             if self._dt is not None:
                 self._dt.rows = self._build_rows(self._filtered_rows_data)
+                self._apply_column_widths()
                 try:
                     self._dt.update()
                 except Exception:
                     pass
+        except Exception:
+            pass
+
+    def _get_column_width(self, col_name: str) -> int:
+        name = str(col_name or "")
+        if name in self._stretch_columns:
+            return int(self._stretch_width_px)
+        return int(self._fixed_col_widths.get(name, self._default_fixed_width_px))
+
+    def _recompute_stretch_width(self):
+        if not self._fieldnames:
+            return
+
+        stretch_cols = [c for c in self._fieldnames if c in self._stretch_columns]
+        if not stretch_cols:
+            return
+
+        dt_width = 900
+        try:
+            if self._dt is not None and getattr(self._dt, "width", None):
+                dt_width = int(getattr(self._dt, "width") or 900)
+        except Exception:
+            dt_width = 900
+
+        fixed_cols = [c for c in self._fieldnames if c not in self._stretch_columns]
+        fixed_sum = 0
+        for c in fixed_cols:
+            fixed_sum += int(
+                self._fixed_col_widths.get(c, self._default_fixed_width_px)
+            )
+
+        spacing = 0
+        try:
+            if self._dt is not None:
+                spacing = int(getattr(self._dt, "column_spacing", 0) or 0)
+        except Exception:
+            spacing = 0
+
+        total_spacing = max(0, (len(self._fieldnames) - 1) * spacing)
+        remaining = dt_width - fixed_sum - total_spacing - int(self._width_padding_px)
+        per = int(remaining / max(1, len(stretch_cols)))
+        self._stretch_width_px = max(int(self._min_stretch_width_px), per)
+
+    def _apply_column_widths(self):
+        if self._dt is None:
+            return
+
+        self._recompute_stretch_width()
+
+        try:
+            for i, col_name in enumerate(self._fieldnames):
+                try:
+                    col_obj = self._dt.columns[i]
+                    label = getattr(col_obj, "label", None)
+                    if isinstance(label, ft.Container):
+                        label.width = self._get_column_width(col_name)
+                except Exception:
+                    pass
+
+            for row in self._dt.rows or []:
+                try:
+                    for i, col_name in enumerate(self._fieldnames):
+                        cell = row.cells[i]
+                        content = getattr(cell, "content", None)
+                        if isinstance(content, ft.Container):
+                            content.width = self._get_column_width(col_name)
+                except Exception:
+                    pass
+
+            try:
+                self._dt.update()
+            except Exception:
+                pass
         except Exception:
             pass
 
@@ -290,6 +480,8 @@ class HistoryTableDialog:
             self._content_container.width = max(800, int(w * 0.90))
             self._content_container.height = max(520, int(h * 0.82))
             self._dt.width = max(760, int(self._content_container.width * 0.98))
+
+            self._apply_column_widths()
 
             try:
                 self._dt.update()

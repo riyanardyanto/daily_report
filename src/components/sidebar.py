@@ -140,16 +140,7 @@ class Sidebar(ft.Container):
             bgcolor=PRIMARY,
         )
 
-        # Entry user
-        self.user = ft.Dropdown(
-            options=[ft.dropdown.Option(opt) for opt in user_options],
-            label="User",
-            label_style=ft.TextStyle(size=12),
-            hint_text="Choose your name",
-            text_size=12,
-            expand=True,
-            content_padding=10,
-        )
+        # User selection is handled in the Save Report dialog.
 
         # Setting Button
         self.settings_button = ft.ElevatedButton(
@@ -181,9 +172,6 @@ class Sidebar(ft.Container):
                         self.shift,
                         self.get_data_button,
                         ft.Divider(height=12, color=ft.Colors.BLACK12),
-                        ft.Text("User", size=11, weight=ft.FontWeight.W_600),
-                        self.user,
-                        ft.Divider(height=16, color=ft.Colors.BLACK12),
                         self.settings_button,
                     ],
                     alignment=ft.MainAxisAlignment.CENTER,
@@ -232,7 +220,6 @@ class Sidebar(ft.Container):
 
         def _reload_dropdowns():
             current_lu = str(getattr(self.link_up, "value", "") or "")
-            current_user = str(getattr(self.user, "value", "") or "")
 
             _p1, lu_opts, _c1, _e1 = load_settings_options(
                 filename="link_up.txt",
@@ -255,15 +242,8 @@ class Sidebar(ft.Container):
                 else (lu_opts[0] if lu_opts else None)
             )
 
-            self.user.options = [ft.dropdown.Option(opt) for opt in user_opts]
-            self.user.value = current_user if current_user in user_opts else None
-
             try:
                 self.link_up.update()
-            except Exception:
-                pass
-            try:
-                self.user.update()
             except Exception:
                 pass
 

@@ -5,8 +5,8 @@ from src.components.qr_code_dialog import QrCodeDialog
 from src.components.report_list_view import ReportList
 from src.components.target_editor import TargetEditorDialog
 from src.services.history_service import save_report_history_csv
-from src.utils.helpers import data_app_path
-from src.utils.theme import DANGER, ON_COLOR, PRIMARY, SECONDARY, SUCCESS
+from src.utils.helpers import data_app_path, load_settings_options
+from src.utils.theme import DANGER, INFO, ON_COLOR, PRIMARY, SECONDARY, SUCCESS, WARNING
 from src.utils.ui_helpers import resolve_page, snack
 
 
@@ -51,7 +51,7 @@ class ReportEditor(ft.Container):
                             ft.IconButton(
                                 icon=ft.Icons.QR_CODE,
                                 icon_color=ON_COLOR,
-                                bgcolor=SECONDARY,
+                                bgcolor=WARNING,
                                 icon_size=18,
                                 tooltip="Show QR code",
                                 on_click=self._on_show_qr_code,
@@ -59,15 +59,23 @@ class ReportEditor(ft.Container):
                             ft.IconButton(
                                 icon=ft.Icons.EDIT,
                                 icon_color=ON_COLOR,
-                                bgcolor=SECONDARY,
+                                bgcolor=PRIMARY,
                                 icon_size=18,
                                 tooltip="Edit target",
                                 on_click=self._on_show_target_editor,
                             ),
                             ft.IconButton(
+                                icon=ft.Icons.SAVE,
+                                icon_color=ON_COLOR,
+                                bgcolor=SUCCESS,
+                                icon_size=18,
+                                tooltip="Save report",
+                                on_click=self._on_save_report,
+                            ),
+                            ft.IconButton(
                                 icon=ft.Icons.TABLE_ROWS,
                                 icon_color=ON_COLOR,
-                                bgcolor=SECONDARY,
+                                bgcolor=INFO,
                                 icon_size=18,
                                 tooltip="Show history",
                                 on_click=self._on_show_history_table,
@@ -92,14 +100,6 @@ class ReportEditor(ft.Container):
                                 icon_size=18,
                                 tooltip="Clear all",
                                 on_click=self._on_clear_all,
-                            ),
-                            ft.IconButton(
-                                icon=ft.Icons.SAVE,
-                                icon_color=ON_COLOR,
-                                bgcolor=PRIMARY,
-                                icon_size=18,
-                                tooltip="Save report",
-                                on_click=self._on_save_report,
                             ),
                         ],
                         spacing=8,
@@ -150,77 +150,166 @@ class ReportEditor(ft.Container):
         if page is None:
             return
 
+        cards = list(getattr(self.report_list, "controls", None) or [])
+        if not cards:
+            snack(page, "No cards to save", kind="warning")
+            return
+
+        # Load user options (from data_app/settings/user.txt)
         try:
-            cards = list(getattr(self.report_list, "controls", None) or [])
-            if not cards:
-                snack(page, "No cards to save", kind="warning")
-                return
-
-            # Sidebar metadata (best-effort)
-            shift = "Shift 1"
-            try:
-                if callable(getattr(self, "_get_selected_shift_cb", None)):
-                    shift = (
-                        str(self._get_selected_shift_cb() or "Shift 1").strip()
-                        or "Shift 1"
-                    )
-            except Exception:
-                shift = "Shift 1"
-
-            link_up = "LU22"
-            try:
-                if callable(getattr(self, "_get_link_up_cb", None)):
-                    link_up = str(self._get_link_up_cb() or "LU22").strip() or "LU22"
-            except Exception:
-                link_up = "LU22"
-
-            func_location = "Packer"
-            try:
-                if callable(getattr(self, "_get_func_location_cb", None)):
-                    func_location = (
-                        str(self._get_func_location_cb() or "Packer").strip()
-                        or "Packer"
-                    )
-            except Exception:
-                func_location = "Packer"
-
-            date_field = ""
-            try:
-                if callable(getattr(self, "_get_date_field_cb", None)):
-                    date_field = str(self._get_date_field_cb() or "").strip()
-            except Exception:
-                date_field = ""
-
-            user = ""
-            try:
-                if callable(getattr(self, "_get_user_cb", None)):
-                    user = str(self._get_user_cb() or "").strip()
-            except Exception:
-                user = ""
-
-            csv_path = data_app_path("history.csv", folder_name="data_app/history")
-
-            ok, msg = save_report_history_csv(
-                csv_path=csv_path,
-                cards=cards,
-                extract_issue=self.report_list._extract_issue_text,
-                extract_details=self.report_list._extract_details,
-                shift=shift,
-                link_up=link_up,
-                func_location=func_location,
-                date_field=date_field,
-                user=user,
+            _p, user_options, _created, _err = load_settings_options(
+                filename="user.txt",
+                defaults=["Alice", "Bob", "Charlie"],
             )
-            msg_l = str(msg or "").lower()
-            if ok:
-                kind = "success"
-            elif any(k in msg_l for k in ("terbuka", "terkunci", "locked")):
-                kind = "warning"
-            else:
-                kind = "error"
-            snack(page, msg, kind=kind)
-        except Exception as ex:
-            snack(page, f"Failed to save report: {ex}", kind="error")
+        except Exception:
+            user_options = ["Alice", "Bob", "Charlie"]
+
+        if not user_options:
+            user_options = ["Alice", "Bob", "Charlie"]
+
+        user_dd = ft.Dropdown(
+            options=[ft.dropdown.Option(opt) for opt in user_options],
+            label="User",
+            hint_text="Choose your name",
+            text_size=12,
+            expand=True,
+            content_padding=10,
+            value=None,
+        )
+
+        def _do_save(selected_user: str):
+            try:
+                # Sidebar metadata (best-effort)
+                shift = "Shift 1"
+                try:
+                    if callable(getattr(self, "_get_selected_shift_cb", None)):
+                        shift = (
+                            str(self._get_selected_shift_cb() or "Shift 1").strip()
+                            or "Shift 1"
+                        )
+                except Exception:
+                    shift = "Shift 1"
+
+                link_up = "LU22"
+                try:
+                    if callable(getattr(self, "_get_link_up_cb", None)):
+                        link_up = (
+                            str(self._get_link_up_cb() or "LU22").strip() or "LU22"
+                        )
+                except Exception:
+                    link_up = "LU22"
+
+                func_location = "Packer"
+                try:
+                    if callable(getattr(self, "_get_func_location_cb", None)):
+                        func_location = (
+                            str(self._get_func_location_cb() or "Packer").strip()
+                            or "Packer"
+                        )
+                except Exception:
+                    func_location = "Packer"
+
+                date_field = ""
+                try:
+                    if callable(getattr(self, "_get_date_field_cb", None)):
+                        date_field = str(self._get_date_field_cb() or "").strip()
+                except Exception:
+                    date_field = ""
+
+                user = str(selected_user or "").strip()
+
+                csv_path = data_app_path("history.csv", folder_name="data_app/history")
+
+                ok, msg = save_report_history_csv(
+                    csv_path=csv_path,
+                    cards=cards,
+                    extract_issue=self.report_list._extract_issue_text,
+                    extract_details=self.report_list._extract_details,
+                    shift=shift,
+                    link_up=link_up,
+                    func_location=func_location,
+                    date_field=date_field,
+                    user=user,
+                )
+                msg_l = str(msg or "").lower()
+                if ok:
+                    kind = "success"
+                elif any(k in msg_l for k in ("terbuka", "terkunci", "locked")):
+                    kind = "warning"
+                else:
+                    kind = "error"
+                snack(page, msg, kind=kind)
+            except Exception as ex:
+                snack(page, f"Failed to save report: {ex}", kind="error")
+
+        def _close_dialog(_e=None):
+            try:
+                dlg.open = False
+                page.update()
+            except Exception:
+                pass
+
+        def _confirm(_e=None):
+            selected_user = str(getattr(user_dd, "value", "") or "").strip()
+            if not selected_user:
+                snack(page, "Please select a user before saving.", kind="warning")
+                return
+            try:
+                _close_dialog()
+            finally:
+                _do_save(selected_user)
+
+        dlg = ft.AlertDialog(
+            modal=True,
+            title=ft.Text("Confirm"),
+            content=ft.Container(
+                content=ft.Column(
+                    controls=[
+                        ft.Text("Select user:"),
+                        user_dd,
+                        ft.Divider(height=10),
+                        ft.Text(f"Save report to history? ({len(cards)} card)"),
+                    ],
+                    spacing=10,
+                ),
+                padding=ft.padding.all(12),
+                bgcolor=ft.Colors.WHITE,
+                border=ft.border.all(1, ft.Colors.BLACK12),
+                border_radius=10,
+                height=150,
+            ),
+            actions=[
+                ft.Row(
+                    controls=[
+                        ft.TextButton(
+                            "Cancel",
+                            on_click=_close_dialog,
+                            style=ft.ButtonStyle(color=SECONDARY),
+                        ),
+                        ft.ElevatedButton(
+                            "Save",
+                            on_click=_confirm,
+                            color=ON_COLOR,
+                            bgcolor=SUCCESS,
+                        ),
+                    ],
+                    alignment=ft.MainAxisAlignment.END,
+                    spacing=8,
+                )
+            ],
+            actions_alignment=ft.MainAxisAlignment.END,
+            on_dismiss=lambda _e: _close_dialog(),
+        )
+
+        try:
+            page.open(dlg)
+        except Exception:
+            try:
+                page.dialog = dlg
+                dlg.open = True
+                page.update()
+            except Exception:
+                pass
 
     def _on_add_card(self, e):
         try:
