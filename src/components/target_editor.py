@@ -37,9 +37,7 @@ class TargetEditorDialog:
         selected_shift = "Shift 1"
         try:
             if callable(self._get_selected_shift_cb):
-                selected_shift = (
-                    str(self._get_selected_shift_cb() or "Shift 1").strip() or "Shift 1"
-                )
+                selected_shift = str(self._get_selected_shift_cb()).strip() or "Shift 1"
         except Exception:
             selected_shift = "Shift 1"
 
@@ -429,22 +427,22 @@ class TargetEditorDialog:
                 snack(page, f"Failed to save CSV: {ex}", kind="error")
                 return
 
-            try:
-                _p, targets, _created, err = load_targets_csv(
-                    shift=selected_shift,
-                    filename=filename,
-                    folder_name=folder_name,
-                    metrics=metrics_order,
-                )
-                if err:
-                    snack(page, f"Failed to refresh targets: {err}", kind="error")
-                    return
+            # try:
+            #     _p, targets, _created, err = load_targets_csv(
+            #         shift=selected_shift,
+            #         filename=filename,
+            #         folder_name=folder_name,
+            #         metrics=metrics_order,
+            #     )
+            #     if err:
+            #         snack(page, f"Failed to refresh targets: {err}", kind="error")
+            #         return
 
-                if targets and callable(self._set_metrics_targets_cb):
-                    self._set_metrics_targets_cb(targets)
-            except Exception as ex:
-                snack(page, f"Failed to refresh targets: {ex}", kind="error")
-                return
+            #     if targets and callable(self._set_metrics_targets_cb):
+            #         self._set_metrics_targets_cb(targets)
+            # except Exception as ex:
+            #     snack(page, f"Failed to refresh targets: {ex}", kind="error")
+            #     return
 
             snack(page, f"Targets saved ({link_up})", kind="success")
             _close_dialog()

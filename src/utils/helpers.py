@@ -68,7 +68,7 @@ def data_app_path(*parts: str, folder_name: str = "data_app") -> Path:
 
 def load_targets_csv(
     *,
-    shift: str,
+    shift: str = "",
     filename: str = "",
     folder_name: str = "data_app",
     metrics: list[str] | None = None,
@@ -82,6 +82,29 @@ def load_targets_csv(
     """
 
     csv_path = data_app_path(filename, folder_name=folder_name)
+
+    def _parse_float(value: str) -> float | None:
+        s = str(value or "").strip()
+        if not s:
+            return None
+        s = s.replace("%", "").strip()
+        # Be lenient with common formats: "1,234.5" or "1.234,5".
+        if "," in s and "." in s:
+            s = s.replace(",", "")
+        elif "," in s and "." not in s:
+            s = s.replace(",", ".")
+        try:
+            return float(s)
+        except Exception:
+            return None
+
+    def _fmt_number(n: float) -> str:
+        try:
+            s = f"{float(n):.2f}"
+            s = s.rstrip("0").rstrip(".")
+            return s
+        except Exception:
+            return "N/A"
 
     if not csv_path.exists():
         try:
@@ -103,6 +126,9 @@ def load_targets_csv(
                             "Shift 3": "",
                         }
                     )
+            if str(shift or "").strip() == "":
+                # No shift selected: template contains no numbers yet → N/A.
+                return csv_path, {str(m): "N/A" for m in metrics_list}, True, None
             return csv_path, {}, True, None
         except Exception as ex:
             return csv_path, {}, False, str(ex)
@@ -113,7 +139,9 @@ def load_targets_csv(
             reader = csv.DictReader(f)
             fieldnames = list(reader.fieldnames or [])
 
-            if shift not in fieldnames:
+            # If shift == "", return per-metric average across Shift 1/2/3.
+            shift_key = str(shift or "").strip()
+            if shift_key != "" and shift_key not in fieldnames:
                 return (
                     csv_path,
                     {},
@@ -135,11 +163,38 @@ def load_targets_csv(
                     f"Metric column not found. Expected 'Metrics'. Available: {fieldnames}",
                 )
 
+            # Try to locate the standard shift columns (be tolerant to casing).
+            shift_cols: dict[str, str] = {}
+            for want in ("Shift 1", "Shift 2", "Shift 3"):
+                for actual in fieldnames:
+                    if str(actual).strip().lower() == want.lower():
+                        shift_cols[want] = actual
+                        break
+
             for row in reader:
                 metric = str(row.get(metric_col, "") or "").strip()
-                value = str(row.get(shift, "") or "").strip()
                 if metric:
-                    targets[metric] = value
+                    if shift_key == "":
+                        try:
+                            nums: list[float] = []
+                            for want in ("Shift 1", "Shift 2", "Shift 3"):
+                                col_name = shift_cols.get(want)
+                                if not col_name:
+                                    continue
+                                parsed = _parse_float(str(row.get(col_name, "") or ""))
+                                if parsed is not None:
+                                    nums.append(parsed)
+
+                            if nums:
+                                avg = sum(nums) / float(len(nums))
+                                targets[metric] = _fmt_number(avg)
+                            else:
+                                targets[metric] = "N/A"
+                        except Exception:
+                            targets[metric] = "N/A"
+                    else:
+                        value = str(row.get(shift, "") or "").strip()
+                        targets[metric] = value
 
         return csv_path, targets, False, None
     except Exception as ex:

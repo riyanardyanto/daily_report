@@ -430,11 +430,13 @@ class DashboardApp(ft.Container):
         shift = None
 
         try:
-            shift = (self.sidebar.shift.value or "").strip()
+            shift = (
+                self.sidebar.shift.value
+                if "All" not in self.sidebar.shift.value
+                else ""
+            ).strip()
         except Exception:
             shift = ""
-        if not shift:
-            shift = "Shift 1"
 
         # Compute actual metrics first so the table rows can follow get_data_actual() output.
         actuals: dict[str, str] = {}
@@ -534,7 +536,9 @@ class DashboardApp(ft.Container):
         except Exception as ex:
             print(f"Failed rebuilding MetricsTable rows: {ex}")
 
-        print(f"Metrics targets updated for {shift} from {csv_path.name}.")
+        print(
+            f"Metrics targets updated for {shift if shift else 'Average of all shifts'} from {csv_path.name}."
+        )
 
     def update_stops_tables(self, df, e=None):
         df = process_data(df)
@@ -581,7 +585,9 @@ class DashboardApp(ft.Container):
         spa_url = get_url_spa(
             link_up=self.sidebar.link_up.value[-2:],
             date=self.sidebar.date_field.value,
-            shift=self.sidebar.shift.value[-1] or "",
+            shift=self.sidebar.shift.value[-1]
+            if self.sidebar.shift.value[-1].isnumeric()
+            else "",
             functional_location=self.sidebar.func_location.value[:4].upper() or "PACK",
             base_url=spa_cfg.base_url or None,
         )

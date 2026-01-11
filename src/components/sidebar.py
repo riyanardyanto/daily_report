@@ -123,6 +123,7 @@ class Sidebar(ft.Container):
                 ft.dropdown.Option("Shift 1"),
                 ft.dropdown.Option("Shift 2"),
                 ft.dropdown.Option("Shift 3"),
+                ft.dropdown.Option("All Shifts"),
             ],
             value="Shift 1",
             label="Shift",
