@@ -1,12 +1,13 @@
 from __future__ import annotations
 
+import asyncio
 import csv
 
 import flet as ft
 
 from src.utils.helpers import data_app_path, load_targets_csv
 from src.utils.theme import ON_COLOR, PRIMARY, SECONDARY
-from src.utils.ui_helpers import is_file_locked_windows, snack
+from src.utils.ui_helpers import is_file_locked_windows, open_dialog, snack
 
 
 class TargetEditorDialog:
@@ -72,85 +73,108 @@ class TargetEditorDialog:
             except Exception:
                 pass
 
-        # Load CSV
+        # Snapshot metrics (used to create template if missing) on UI thread.
+        metrics_for_template: list[str] = []
+        try:
+            if callable(self._get_metrics_rows_cb):
+                rows = self._get_metrics_rows_cb() or []
+                metrics_for_template = [
+                    str(m).strip() for m, _t, _a in rows if str(m).strip()
+                ]
+        except Exception:
+            metrics_for_template = []
+
+        if not metrics_for_template:
+            metrics_for_template = [
+                "STOP",
+                "L STOP",
+                "PR",
+                "UPTIME",
+                "MTBF",
+                "L MTBF",
+                "UPDT",
+                "PDT",
+                "TRL",
+            ]
+
+        # Data loaded from CSV (populated asynchronously)
         fieldnames: list[str] = []
         metrics_order: list[str] = []
         table_values: dict[str, dict[str, str]] = {}
-        try:
-            if not csv_path.exists():
-                # Create empty template in data_app so the editor can still open.
-                try:
-                    metrics = []
-                    if callable(self._get_metrics_rows_cb):
-                        rows = self._get_metrics_rows_cb() or []
-                        metrics = [
-                            str(m).strip() for m, _t, _a in rows if str(m).strip()
-                        ]
-                except Exception:
-                    metrics = []
-
-                # If the table is empty/uninitialized, fall back to the current default metric set.
-                if not metrics:
-                    metrics = [
-                        "STOP",
-                        "L STOP",
-                        "PR",
-                        "UPTIME",
-                        "MTBF",
-                        "L MTBF",
-                        "UPDT",
-                        "PDT",
-                        "TRL",
-                    ]
-
-                _p, _targets, _created, err = load_targets_csv(
-                    shift=selected_shift,
-                    filename=filename,
-                    folder_name=folder_name,
-                    metrics=metrics,
-                )
-                if err:
-                    snack(page, f"Failed to create template CSV: {err}", kind="error")
-                    return
-
-            with csv_path.open("r", newline="", encoding="utf-8-sig") as f:
-                reader = csv.DictReader(f)
-                fieldnames = list(reader.fieldnames or [])
-
-                # Determine metric + shift columns
-                metric_col = None
-                for candidate in ("Metrics", "Metric", "METRICS", "METRIC"):
-                    if candidate in fieldnames:
-                        metric_col = candidate
-                        break
-                if metric_col is None:
-                    snack(page, "Column 'Metrics' not found in CSV", kind="error")
-                    return
-
-                shift_cols = [
-                    c for c in ("Shift 1", "Shift 2", "Shift 3") if c in fieldnames
-                ]
-                if not shift_cols:
-                    snack(page, "Shift columns not found in CSV", kind="error")
-                    return
-
-                for row in reader:
-                    metric = str(row.get(metric_col, "") or "").strip()
-                    if not metric:
-                        continue
-                    metrics_order.append(metric)
-                    table_values[metric] = {
-                        sc: str(row.get(sc, "") or "").strip() for sc in shift_cols
-                    }
-
-        except Exception as ex:
-            snack(page, f"Failed to read CSV: {ex}", kind="error")
-            return
-
-        shift_cols = [c for c in ("Shift 1", "Shift 2", "Shift 3") if c in fieldnames]
+        shift_cols: list[str] = []
 
         # Build editable DataTable: store TextField refs per metric+shift
         cell_refs: dict[str, dict[str, ft.Ref[ft.TextField]]] = {}
+        dt: ft.DataTable | None = None
+
+        # Create dialog immediately with a loading UI.
+        loading_ring = ft.ProgressRing(width=18, height=18, stroke_width=2)
+        loading_text = ft.Text("Loading targets…", size=12)
+
+        base_content = ft.Container(expand=True)
+        loading_overlay = ft.Container(
+            content=ft.Column(
+                controls=[loading_ring, loading_text],
+                horizontal_alignment=ft.CrossAxisAlignment.CENTER,
+                alignment=ft.MainAxisAlignment.CENTER,
+                tight=True,
+                spacing=10,
+            ),
+            alignment=ft.alignment.center,
+            expand=True,
+            visible=True,
+        )
+
+        content_host = ft.Stack(
+            controls=[base_content, loading_overlay],
+            expand=True,
+        )
+
+        paste_btn = ft.ElevatedButton(
+            "Paste",
+            on_click=lambda _e: None,
+            color=ON_COLOR,
+            bgcolor=SECONDARY,
+            disabled=True,
+        )
+        save_btn = ft.ElevatedButton(
+            "Save",
+            on_click=lambda _e: None,
+            color=ON_COLOR,
+            bgcolor=PRIMARY,
+            disabled=True,
+        )
+
+        self._dlg = ft.AlertDialog(
+            modal=True,
+            title=ft.Text("Edit target"),
+            content=ft.Container(
+                content=content_host,
+                padding=ft.padding.all(12),
+                bgcolor=ft.Colors.WHITE,
+                border=ft.border.all(1, ft.Colors.BLACK12),
+                border_radius=10,
+            ),
+            actions=[
+                ft.Row(
+                    controls=[
+                        ft.TextButton(
+                            "Close",
+                            on_click=_close_dialog,
+                            style=ft.ButtonStyle(color=SECONDARY),
+                        ),
+                        paste_btn,
+                        save_btn,
+                    ],
+                    alignment=ft.MainAxisAlignment.END,
+                    spacing=8,
+                )
+            ],
+            actions_alignment=ft.MainAxisAlignment.END,
+            on_dismiss=lambda _e: _close_dialog(),
+        )
+
+        open_dialog(page, self._dlg)
 
         def _make_cell(metric: str, shift: str, value: str) -> ft.DataCell:
             tf_ref: ft.Ref[ft.TextField] = ft.Ref()
@@ -176,35 +200,37 @@ class TargetEditorDialog:
                 )
             )
 
-        rows: list[ft.DataRow] = []
-        for metric in metrics_order:
-            cells: list[ft.DataCell] = [
-                ft.DataCell(ft.Text(metric, size=12, weight=ft.FontWeight.W_600))
-            ]
-            for sc in shift_cols:
-                cells.append(
-                    _make_cell(metric, sc, table_values.get(metric, {}).get(sc, ""))
-                )
-            rows.append(ft.DataRow(cells=cells))
+        def _build_datatable() -> ft.DataTable:
+            cell_refs.clear()
+            rows: list[ft.DataRow] = []
+            for metric in metrics_order:
+                cells: list[ft.DataCell] = [
+                    ft.DataCell(ft.Text(metric, size=12, weight=ft.FontWeight.W_600))
+                ]
+                for sc in shift_cols:
+                    cells.append(
+                        _make_cell(metric, sc, table_values.get(metric, {}).get(sc, ""))
+                    )
+                rows.append(ft.DataRow(cells=cells))
 
-        dt = ft.DataTable(
-            columns=[ft.DataColumn(ft.Text("Metrics", size=12))]
-            + [
-                ft.DataColumn(
-                    ft.Text(sc, size=12),
-                    heading_row_alignment=ft.MainAxisAlignment.CENTER,
-                )
-                for sc in shift_cols
-            ],
-            rows=rows,
-            border=ft.border.all(1, ft.Colors.BLACK12),
-            heading_row_color=ft.Colors.BLUE_GREY_50,
-            data_row_max_height=40,
-            data_row_min_height=40,
-            heading_row_height=34,
-            vertical_lines=ft.BorderSide(1, ft.Colors.BLACK12),
-            horizontal_lines=ft.BorderSide(1, ft.Colors.BLACK12),
-        )
+            return ft.DataTable(
+                columns=[ft.DataColumn(ft.Text("Metrics", size=12))]
+                + [
+                    ft.DataColumn(
+                        ft.Text(sc, size=12),
+                        heading_row_alignment=ft.MainAxisAlignment.CENTER,
+                    )
+                    for sc in shift_cols
+                ],
+                rows=rows,
+                border=ft.border.all(1, ft.Colors.BLACK12),
+                heading_row_color=ft.Colors.BLUE_GREY_50,
+                data_row_max_height=40,
+                data_row_min_height=40,
+                heading_row_height=34,
+                vertical_lines=ft.BorderSide(1, ft.Colors.BLACK12),
+                horizontal_lines=ft.BorderSide(1, ft.Colors.BLACK12),
+            )
 
         def _apply_matrix(matrix: list[list[str]]):
             if not matrix:
@@ -319,6 +345,9 @@ class TargetEditorDialog:
                 return []
 
         def _on_paste(_e=None):
+            if dt is None:
+                return
+
             async def _paste_async():
                 try:
                     clip = ""
@@ -337,7 +366,7 @@ class TargetEditorDialog:
             try:
                 runner = getattr(page, "run_task", None)
                 if callable(runner):
-                    runner(_paste_async())
+                    runner(_paste_async)
                     return
             except Exception:
                 pass
@@ -349,15 +378,11 @@ class TargetEditorDialog:
             _apply_matrix(_parse_excel_clipboard(clip))
 
         def _on_save(_e=None):
+            if dt is None:
+                return
+
             try:
-                if csv_path.exists() and is_file_locked_windows(csv_path):
-                    snack(
-                        page,
-                        "Can't save targets because the CSV file is open/locked (e.g., in Excel).\n"
-                        f"Close this file first: {csv_path}",
-                        kind="warning",
-                    )
-                    return
+                snack(page, "Saving…", kind="warning")
             except Exception:
                 pass
 
@@ -388,43 +413,84 @@ class TargetEditorDialog:
                         row[sc] = ""
                 out_rows.append(row)
 
-            try:
-                out_fieldnames = (
-                    list(fieldnames) if fieldnames else [metric_col] + shift_cols
-                )
-                if metric_col not in out_fieldnames:
-                    out_fieldnames.insert(0, metric_col)
-                for sc in shift_cols:
-                    if sc not in out_fieldnames:
-                        out_fieldnames.append(sc)
+            out_fieldnames = (
+                list(fieldnames) if fieldnames else [metric_col] + shift_cols
+            )
+            if metric_col not in out_fieldnames:
+                out_fieldnames.insert(0, metric_col)
+            for sc in shift_cols:
+                if sc not in out_fieldnames:
+                    out_fieldnames.append(sc)
 
-                with csv_path.open("w", newline="", encoding="utf-8-sig") as f:
-                    writer = csv.DictWriter(f, fieldnames=out_fieldnames)
-                    writer.writeheader()
-                    for r in out_rows:
-                        writer.writerow(r)
-            except PermissionError:
-                snack(
-                    page,
-                    "Failed to save targets: CSV file is not writable.\n"
-                    "It may be open (e.g., in Excel).\n"
-                    f"Close this file first: {csv_path}",
-                    kind="warning",
-                )
-                return
-            except OSError as ex:
-                if getattr(ex, "winerror", None) in (32, 33):
+            async def _save_async():
+                try:
+
+                    def _worker_write():
+                        if csv_path.exists() and is_file_locked_windows(csv_path):
+                            return (
+                                False,
+                                "Can't save targets because the CSV file is open/locked (e.g., in Excel).\n"
+                                f"Close this file first: {csv_path}",
+                                "warning",
+                            )
+
+                        with csv_path.open("w", newline="", encoding="utf-8-sig") as f:
+                            writer = csv.DictWriter(f, fieldnames=out_fieldnames)
+                            writer.writeheader()
+                            for r in out_rows:
+                                writer.writerow(r)
+                        return (True, "Targets saved", "success")
+
+                    ok, msg, kind = await asyncio.to_thread(_worker_write)
+                    snack(page, msg if ok else msg, kind=kind)
+                    if ok:
+                        _close_dialog()
+                except PermissionError:
                     snack(
                         page,
-                        "Failed to save targets: CSV file is in use by another app (e.g., Excel).\n"
+                        "Failed to save targets: CSV file is not writable.\n"
+                        "It may be open (e.g., in Excel).\n"
                         f"Close this file first: {csv_path}",
                         kind="warning",
                     )
-                    return
-                snack(page, f"Failed to save CSV: {ex}", kind="error")
-                return
-            except Exception as ex:
-                snack(page, f"Failed to save CSV: {ex}", kind="error")
+                except OSError as ex:
+                    if getattr(ex, "winerror", None) in (32, 33):
+                        snack(
+                            page,
+                            "Failed to save targets: CSV file is in use by another app (e.g., Excel).\n"
+                            f"Close this file first: {csv_path}",
+                            kind="warning",
+                        )
+                    else:
+                        snack(page, f"Failed to save CSV: {ex}", kind="error")
+                except Exception as ex:
+                    snack(page, f"Failed to save CSV: {ex}", kind="error")
+
+            runner = getattr(page, "run_task", None)
+            if callable(runner):
+                runner(_save_async)
+            else:
+                # Fallback: blocking save
+                try:
+                    if csv_path.exists() and is_file_locked_windows(csv_path):
+                        snack(
+                            page,
+                            "Can't save targets because the CSV file is open/locked (e.g., in Excel).\n"
+                            f"Close this file first: {csv_path}",
+                            kind="warning",
+                        )
+                        return
+
+                    with csv_path.open("w", newline="", encoding="utf-8-sig") as f:
+                        writer = csv.DictWriter(f, fieldnames=out_fieldnames)
+                        writer.writeheader()
+                        for r in out_rows:
+                            writer.writerow(r)
+
+                    snack(page, f"Targets saved ({link_up})", kind="success")
+                    _close_dialog()
+                except Exception as ex:
+                    snack(page, f"Failed to save CSV: {ex}", kind="error")
                 return
 
             # try:
@@ -444,69 +510,127 @@ class TargetEditorDialog:
             #     snack(page, f"Failed to refresh targets: {ex}", kind="error")
             #     return
 
-            snack(page, f"Targets saved ({link_up})", kind="success")
-            _close_dialog()
+            # Snack + close handled in async save.
 
-        self._dlg = ft.AlertDialog(
-            modal=True,
-            title=ft.Text("Edit target"),
-            content=ft.Container(
-                content=ft.Column(
+        async def _load_async():
+            try:
+
+                def _worker_load():
+                    # Ensure template exists.
+                    if not csv_path.exists():
+                        _p, _targets, _created, err = load_targets_csv(
+                            shift=selected_shift,
+                            filename=filename,
+                            folder_name=folder_name,
+                            metrics=metrics_for_template,
+                        )
+                        if err:
+                            return (False, f"Failed to create template CSV: {err}")
+
+                    with csv_path.open("r", newline="", encoding="utf-8-sig") as f:
+                        reader = csv.DictReader(f)
+                        fns = list(reader.fieldnames or [])
+
+                        metric_col = None
+                        for candidate in ("Metrics", "Metric", "METRICS", "METRIC"):
+                            if candidate in fns:
+                                metric_col = candidate
+                                break
+                        if metric_col is None:
+                            return (False, "Column 'Metrics' not found in CSV")
+
+                        scols = [
+                            c for c in ("Shift 1", "Shift 2", "Shift 3") if c in fns
+                        ]
+                        if not scols:
+                            return (False, "Shift columns not found in CSV")
+
+                        order: list[str] = []
+                        values: dict[str, dict[str, str]] = {}
+                        for row in reader:
+                            metric = str(row.get(metric_col, "") or "").strip()
+                            if not metric:
+                                continue
+                            order.append(metric)
+                            values[metric] = {
+                                sc: str(row.get(sc, "") or "").strip() for sc in scols
+                            }
+
+                    return (
+                        True,
+                        {
+                            "fieldnames": fns,
+                            "metrics_order": order,
+                            "table_values": values,
+                            "shift_cols": scols,
+                        },
+                    )
+
+                ok, payload = await asyncio.to_thread(_worker_load)
+                if not ok:
+                    base_content.content = ft.Text(str(payload), size=12)
+                    loading_overlay.visible = False
+                    try:
+                        base_content.update()
+                        loading_overlay.update()
+                    except Exception:
+                        pass
+                    return
+
+                # Populate loaded data
+                nonlocal dt
+                fieldnames[:] = list(payload.get("fieldnames") or [])
+                metrics_order[:] = list(payload.get("metrics_order") or [])
+                table_values.clear()
+                table_values.update(payload.get("table_values") or {})
+                shift_cols[:] = list(payload.get("shift_cols") or [])
+
+                dt = _build_datatable()
+
+                # Wire handlers now that data table exists
+                paste_btn.disabled = False
+                paste_btn.on_click = _on_paste
+                save_btn.disabled = False
+                save_btn.on_click = _on_save
+
+                base_content.content = ft.Column(
                     controls=[
                         ft.Text(
                             "Copy a range from Excel, then click Paste.",
                             size=12,
                             italic=True,
                         ),
-                        ft.Container(
-                            content=dt,
-                            expand=True,
-                        ),
+                        ft.Container(content=dt, expand=True),
                     ],
                     expand=True,
                     spacing=8,
                     scroll=ft.ScrollMode.AUTO,
-                ),
-                padding=ft.padding.all(12),
-                bgcolor=ft.Colors.WHITE,
-                border=ft.border.all(1, ft.Colors.BLACK12),
-                border_radius=10,
-            ),
-            actions=[
-                ft.Row(
-                    controls=[
-                        ft.TextButton(
-                            "Close",
-                            on_click=_close_dialog,
-                            style=ft.ButtonStyle(color=SECONDARY),
-                        ),
-                        ft.ElevatedButton(
-                            "Paste",
-                            on_click=_on_paste,
-                            color=ON_COLOR,
-                            bgcolor=SECONDARY,
-                        ),
-                        ft.ElevatedButton(
-                            "Save",
-                            on_click=_on_save,
-                            color=ON_COLOR,
-                            bgcolor=PRIMARY,
-                        ),
-                    ],
-                    alignment=ft.MainAxisAlignment.END,
-                    spacing=8,
                 )
-            ],
-            actions_alignment=ft.MainAxisAlignment.END,
-            on_dismiss=lambda _e: _close_dialog(),
-        )
+                loading_overlay.visible = False
 
-        try:
-            page.open(self._dlg)
-        except Exception:
-            try:
-                page.dialog = self._dlg
-                self._dlg.open = True
-                page.update()
-            except Exception:
-                pass
+                try:
+                    base_content.update()
+                    loading_overlay.update()
+                    paste_btn.update()
+                    save_btn.update()
+                except Exception:
+                    pass
+            except Exception as ex:
+                base_content.content = ft.Text(f"Failed to read CSV: {ex}", size=12)
+                loading_overlay.visible = False
+                try:
+                    base_content.update()
+                    loading_overlay.update()
+                except Exception:
+                    pass
+
+        runner = getattr(page, "run_task", None)
+        if callable(runner):
+            runner(_load_async)
+        else:
+            # If run_task isn't available, fall back to current (blocking) behavior.
+            snack(
+                page,
+                "run_task not available; Target editor may be slow",
+                kind="warning",
+            )

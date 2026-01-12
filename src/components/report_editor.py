@@ -1,3 +1,5 @@
+import asyncio
+
 import flet as ft
 
 from src.components.history_table import HistoryTableDialog
@@ -7,13 +9,12 @@ from src.components.target_editor import TargetEditorDialog
 from src.services.history_service import save_report_history_csv
 from src.utils.helpers import data_app_path, load_settings_options
 from src.utils.theme import DANGER, INFO, ON_COLOR, PRIMARY, SECONDARY, SUCCESS, WARNING
-from src.utils.ui_helpers import resolve_page, snack
+from src.utils.ui_helpers import open_dialog, resolve_page, snack
 
 
 class ReportEditor(ft.Container):
     def __init__(
         self,
-        on_report_table=None,
         get_report_table_text=None,
         get_include_table=None,
         get_metrics_rows=None,
@@ -22,12 +23,10 @@ class ReportEditor(ft.Container):
         get_link_up=None,
         get_func_location=None,
         get_date_field=None,
-        get_user=None,
         **kwargs,
     ):
         # Default to filling available space so the embedded ReportList becomes scrollable.
         kwargs.setdefault("expand", True)
-        self._report_table_cb = on_report_table
         self._get_report_table_text_cb = get_report_table_text
         self._get_include_table_cb = get_include_table
         self._get_metrics_rows_cb = get_metrics_rows
@@ -36,7 +35,6 @@ class ReportEditor(ft.Container):
         self._get_link_up_cb = get_link_up
         self._get_func_location_cb = get_func_location
         self._get_date_field_cb = get_date_field
-        self._get_user_cb = get_user
 
         header = ft.Container(
             bgcolor=ft.Colors.WHITE,
@@ -220,25 +218,60 @@ class ReportEditor(ft.Container):
 
                 csv_path = data_app_path("history.csv", folder_name="data_app/history")
 
-                ok, msg = save_report_history_csv(
-                    csv_path=csv_path,
-                    cards=cards,
-                    extract_issue=self.report_list._extract_issue_text,
-                    extract_details=self.report_list._extract_details,
-                    shift=shift,
-                    link_up=link_up,
-                    func_location=func_location,
-                    date_field=date_field,
-                    user=user,
-                )
-                msg_l = str(msg or "").lower()
-                if ok:
-                    kind = "success"
-                elif any(k in msg_l for k in ("terbuka", "terkunci", "locked")):
-                    kind = "warning"
+                snack(page, "Saving…", kind="warning")
+
+                async def _run_save():
+                    try:
+
+                        def _worker():
+                            return save_report_history_csv(
+                                csv_path=csv_path,
+                                cards=cards,
+                                extract_issue=self.report_list._extract_issue_text,
+                                extract_details=self.report_list._extract_details,
+                                shift=shift,
+                                link_up=link_up,
+                                func_location=func_location,
+                                date_field=date_field,
+                                user=user,
+                            )
+
+                        ok, msg = await asyncio.to_thread(_worker)
+                        msg_l = str(msg or "").lower()
+                        if ok:
+                            kind = "success"
+                        elif any(k in msg_l for k in ("terbuka", "terkunci", "locked")):
+                            kind = "warning"
+                        else:
+                            kind = "error"
+                        snack(page, msg, kind=kind)
+                    except Exception as ex:
+                        snack(page, f"Failed to save report: {ex}", kind="error")
+
+                runner = getattr(page, "run_task", None)
+                if callable(runner):
+                    runner(_run_save)
                 else:
-                    kind = "error"
-                snack(page, msg, kind=kind)
+                    # Fallback (blocking) if run_task isn't available
+                    ok, msg = save_report_history_csv(
+                        csv_path=csv_path,
+                        cards=cards,
+                        extract_issue=self.report_list._extract_issue_text,
+                        extract_details=self.report_list._extract_details,
+                        shift=shift,
+                        link_up=link_up,
+                        func_location=func_location,
+                        date_field=date_field,
+                        user=user,
+                    )
+                    msg_l = str(msg or "").lower()
+                    if ok:
+                        kind = "success"
+                    elif any(k in msg_l for k in ("terbuka", "terkunci", "locked")):
+                        kind = "warning"
+                    else:
+                        kind = "error"
+                    snack(page, msg, kind=kind)
             except Exception as ex:
                 snack(page, f"Failed to save report: {ex}", kind="error")
 
@@ -301,15 +334,7 @@ class ReportEditor(ft.Container):
             on_dismiss=lambda _e: _close_dialog(),
         )
 
-        try:
-            page.open(dlg)
-        except Exception:
-            try:
-                page.dialog = dlg
-                dlg.open = True
-                page.update()
-            except Exception:
-                pass
+        open_dialog(page, dlg)
 
     def _on_add_card(self, e):
         try:
@@ -317,17 +342,8 @@ class ReportEditor(ft.Container):
         except Exception:
             pass
 
-    def _on_report_table(self, e):
-        try:
-            if callable(getattr(self, "_report_table_cb", None)):
-                self._report_table_cb()
-            else:
-                print("(no report table callback)")
-        except Exception:
-            pass
-
     def _on_clear_all(self, e):
-        page = resolve_page(e)
+        page = resolve_page(e, fallback=getattr(self, "page", None))
         if page is None:
             return
 
@@ -378,18 +394,10 @@ class ReportEditor(ft.Container):
             on_dismiss=lambda _e: _close_dialog(),
         )
 
-        try:
-            page.open(dlg)
-        except Exception:
-            try:
-                page.dialog = dlg
-                dlg.open = True
-                page.update()
-            except Exception:
-                pass
+        open_dialog(page, dlg)
 
     def _on_show_qr_code(self, e):
-        page = resolve_page(e)
+        page = resolve_page(e, fallback=getattr(self, "page", None))
         if page is None:
             return
 

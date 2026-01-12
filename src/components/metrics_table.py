@@ -207,15 +207,6 @@ class MetricsTable(ft.Container):
         except Exception:
             pass
 
-    def print_tabulated(self, tablefmt: str = "psql"):
-        """Print the current metrics table to stdout using tabulate."""
-        try:
-            _, rows = self.get_tabulate_data()
-            if not rows:
-                return
-        except Exception as ex:
-            raise ex
-
     def format_tabulated(self, tablefmt: str = "pretty") -> str:
         """Return the current metrics table as a string using tabulate."""
         try:

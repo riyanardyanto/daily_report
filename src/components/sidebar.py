@@ -8,6 +8,7 @@ from src.components.settings_dialog import SettingsDialog
 from src.services.config_service import get_application_config
 from src.utils.helpers import load_settings_options
 from src.utils.theme import ON_COLOR, PRIMARY, SECONDARY
+from src.utils.ui_helpers import resolve_page
 
 
 class Sidebar(ft.Container):
@@ -114,7 +115,7 @@ class Sidebar(ft.Container):
             icon=ft.Icons.CALENDAR_MONTH,
             icon_size=20,
             tooltip="Choose date",
-            on_click=lambda e: self.page.open(self.date_picker),
+            on_click=self._on_open_date_picker,
         )
 
         # Shift dropdown (Shift 1/2/3)
@@ -215,7 +216,7 @@ class Sidebar(ft.Container):
         self.date_field.update()
 
     def on_settings_click(self, e: ft.ControlEvent):
-        page = getattr(e, "page", None)
+        page = resolve_page(e, fallback=getattr(self, "page", None))
         if page is None:
             return
 
@@ -249,3 +250,27 @@ class Sidebar(ft.Container):
                 pass
 
         SettingsDialog(page=page, on_saved=_reload_dropdowns).show()
+
+    def _on_open_date_picker(self, e: ft.ControlEvent):
+        page = resolve_page(e, fallback=getattr(self, "page", None))
+        if page is None:
+            return
+
+        try:
+            page.open(self.date_picker)
+        except Exception:
+            # DatePicker isn't an AlertDialog, so keep this best-effort.
+            try:
+                overlay = getattr(page, "overlay", None)
+                if isinstance(overlay, list) and self.date_picker not in overlay:
+                    overlay.append(self.date_picker)
+            except Exception:
+                pass
+            try:
+                self.date_picker.open = True
+            except Exception:
+                pass
+            try:
+                page.update()
+            except Exception:
+                pass

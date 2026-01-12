@@ -3,6 +3,7 @@ import uuid
 import flet as ft
 
 from src.utils.theme import DANGER, ON_COLOR, PRIMARY, SECONDARY, SUCCESS
+from src.utils.ui_helpers import open_dialog
 
 
 class ReportList(ft.ReorderableListView):
@@ -14,18 +15,6 @@ class ReportList(ft.ReorderableListView):
             return text.strip()
         except Exception:
             return ""
-
-    def print_all_cards(self):
-        """Print all cards (issue, details, actions) to stdout."""
-        try:
-            text = self.build_report_text()
-            print(text if text else "(no cards)")
-        except Exception:
-            # best-effort; don't crash UI thread
-            try:
-                print("(failed to print cards)")
-            except Exception:
-                pass
 
     def build_report_text(self) -> str:
         """Build report text for all cards (skips empty/whitespace fields)."""
@@ -47,12 +36,9 @@ class ReportList(ft.ReorderableListView):
                         lines.append(f"> {detail_text}\n")
                     elif actions:
                         lines.append(f"> {detail_index}\n")
-
-                    action_no = 0
                     for action_text in actions:
                         if not action_text:
                             continue
-                        action_no += 1
                         lines.append(f"- {action_text}\n")
 
                 lines.append("\n")
@@ -182,10 +168,6 @@ class ReportList(ft.ReorderableListView):
                     tf.focus()
             except Exception:
                 pass
-
-    # Backwards-compatible alias (used elsewhere in the app)
-    def append_item(self, text: str):
-        self.append_item_issue(text)
 
     def append_item_detail(
         self, issue_column: ft.Column, text: str = "", *, focus: bool = True
@@ -428,15 +410,7 @@ class ReportList(ft.ReorderableListView):
             on_dismiss=lambda e: _close_dialog(),
         )
 
-        try:
-            page.open(dlg)
-        except Exception:
-            try:
-                page.dialog = dlg
-                dlg.open = True
-                page.update()
-            except Exception:
-                pass
+        open_dialog(page, dlg)
 
     def remove_action(
         self, detail_tile: ft.ExpansionTile, action_container: ft.Container
@@ -526,15 +500,7 @@ class ReportList(ft.ReorderableListView):
             on_dismiss=lambda e: _close_dialog(),
         )
 
-        try:
-            page.open(dlg)
-        except Exception:
-            try:
-                page.dialog = dlg
-                dlg.open = True
-                page.update()
-            except Exception:
-                pass
+        open_dialog(page, dlg)
 
     def remove_issue(self, issue_card: ft.Card):
         """Remove an issue card from the list."""
@@ -615,15 +581,7 @@ class ReportList(ft.ReorderableListView):
             on_dismiss=lambda e: _close_dialog(),
         )
 
-        try:
-            page.open(dlg)
-        except Exception:
-            try:
-                page.dialog = dlg
-                dlg.open = True
-                page.update()
-            except Exception:
-                pass
+        open_dialog(page, dlg)
 
     def _make_issue_card(
         self,
@@ -720,7 +678,7 @@ class ReportList(ft.ReorderableListView):
                         label="Issue",
                         hint_text="Issue description...",
                         label_style=ft.TextStyle(
-                            size=11,
+                            size=9,
                             bgcolor=ft.Colors.WHITE,
                         ),
                         text_size=11,
@@ -835,7 +793,7 @@ class ReportList(ft.ReorderableListView):
                         value=str(text),
                         label="Detail description",
                         label_style=ft.TextStyle(
-                            size=11,
+                            size=9,
                             bgcolor=ft.Colors.WHITE,
                         ),
                         text_size=11,
@@ -936,7 +894,7 @@ class ReportList(ft.ReorderableListView):
                         value=str(text),
                         label="Action description",
                         label_style=ft.TextStyle(
-                            size=11,
+                            size=9,
                             bgcolor=ft.Colors.WHITE,
                         ),
                         text_size=11,

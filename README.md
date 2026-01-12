@@ -65,17 +65,42 @@ Data yang dipakai aplikasi:
 - `data_app/history/history.csv` — data riwayat.
 - `data_app/targets/*.csv` — file target (contoh: `target_make_21.csv`, `target_pack_24.csv`).
 
+### Pengaturan Performa UI
+
+Beberapa optimasi performa bisa di-tuning dari bagian `[UI]` di `data_app/settings/config.toml`:
+
+- `history_max_rows`: membatasi jumlah baris history yang dirender di dialog History (lebih kecil = lebih cepat).
+- `qr_cache_size`: jumlah payload QR yang di-cache di memori untuk mempercepat open QR berulang.
+- `spa_cache_ttl_seconds`: TTL (detik) cache hasil tombol **Get Data** untuk input yang sama. Set `0` untuk mematikan cache.
+
+## Optimasi Performa & Stabilitas UI
+
+Perubahan berikut sudah diterapkan untuk meningkatkan responsivitas dan mencegah UI “hang”:
+
+- **Dialog lebih stabil**: pembukaan dialog dibuat lebih robust (fallback page resolution + helper pembuka dialog) sehingga tidak “silent fail”.
+- **QR Code lebih responsif**: dialog QR tampil cepat dengan state loading, proses generate dipindah ke background, dan hasilnya di-cache.
+- **History lebih cepat dibuka**: dialog History tampil cepat dengan loading, baca CSV dipindah ke background, plus limit render via `history_max_rows`.
+- **Get Data non-blocking**: fetch/parse/proses SPA dipindah ke background sehingga UI tetap responsif.
+- **Anti stale-result**: hasil task lama tidak menimpa hasil terbaru saat user klik Get Data berkali-kali.
+- **Indikator status**: status bar menampilkan `Loading…` saat proses, dan `(...Cached)` saat hasil berasal dari cache.
+
 ## Cara Menjalankan
 
 Jalankan aplikasi dengan salah satu cara berikut:
 
-### Opsi A: Jalankan via `main.py`
+### Opsi A (disarankan): Jalankan via `uv`
+
+```powershell
+uv run main.py
+```
+
+### Opsi B: Jalankan via `main.py`
 
 ```powershell
 python main.py
 ```
 
-### Opsi B: Jalankan modul app (jika dipakai sebagai entrypoint)
+### Opsi C: Jalankan modul app (jika dipakai sebagai entrypoint)
 
 ```powershell
 python -m src
@@ -134,4 +159,5 @@ Hasil build biasanya ada di folder `dist/` dengan nama `Daily Report.exe`.
 - **Aplikasi gagal start / module not found**: pastikan dependencies ter-install (lihat **Instalasi**) dan Anda menjalankan dari folder proyek.
 - **Data tidak muncul**: cek apakah `data_app/history/history.csv` dan file target di `data_app/targets/` tersedia dan format CSV sesuai.
 - **Konfigurasi tidak terbaca**: pastikan `data_app/settings/config.toml` ada dan tidak kosong.
+- **Muncul warning GIL dari pandas (Python 3.14 free-threaded)**: warning ini biasanya tidak menghentikan aplikasi. Jika ingin minim warning/lebih stabil, gunakan Python 3.11/3.12 sesuai rekomendasi di **Prasyarat**.
 

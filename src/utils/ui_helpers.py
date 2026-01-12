@@ -36,6 +36,69 @@ def resolve_page(e: Any | None = None, fallback: Any | None = None) -> Any | Non
     return fallback
 
 
+def open_dialog(page: Any, dlg: ft.AlertDialog) -> bool:
+    """Open an AlertDialog in a best-effort, non-silent way.
+
+    Why this exists:
+    - In some edge cases `page.open()` may throw (page not ready / disposed /
+      a previous dialog still open).
+    - Some callers previously swallowed exceptions, making the UI appear to do
+      nothing.
+
+    Behavior:
+    - Closes any currently-open `page.dialog` (best-effort).
+    - Tries `page.open(dlg)` first, then falls back to setting `page.dialog`.
+    - If both fail, it emits a SnackBar (when possible) and prints the error.
+
+    Returns:
+        True if a dialog open attempt was made successfully, else False.
+    """
+
+    if page is None or dlg is None:
+        return False
+
+    # Close existing dialog if present to reduce "sometimes doesn't show" cases.
+    try:
+        existing = getattr(page, "dialog", None)
+        if existing is not None and getattr(existing, "open", False):
+            existing.open = False
+            try:
+                page.update()
+            except Exception:
+                pass
+    except Exception:
+        pass
+
+    try:
+        page.open(dlg)
+        return True
+    except Exception as ex_open:
+        # Fall back to the older API style.
+        try:
+            page.dialog = dlg
+            dlg.open = True
+            page.update()
+            return True
+        except Exception as ex_fallback:
+            msg = (
+                "Failed to open dialog "
+                f"(open={type(ex_open).__name__}: {ex_open!r}; "
+                f"fallback={type(ex_fallback).__name__}: {ex_fallback!r})"
+            )
+            try:
+                snack(page, msg, kind="error")
+            except Exception:
+                pass
+            try:
+                import traceback
+
+                print(msg)
+                traceback.print_exc()
+            except Exception:
+                pass
+            return False
+
+
 def _snack_style(message: Any, kind: str | None) -> tuple[str, str]:
     """Return (bgcolor, text_color) for a snackbar."""
     try:

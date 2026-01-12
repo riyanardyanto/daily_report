@@ -9,6 +9,15 @@ from src.utils.helpers import data_app_path
 DEFAULT_CONFIG_TOML = """[APPLICATION]
 environment = "production"
 
+[UI]
+# Performance-related UI settings
+# - history_max_rows: limits how many latest history rows are rendered in the History dialog
+# - qr_cache_size: number of QR payloads cached in memory to speed up repeated opens
+# - spa_cache_ttl_seconds: cache TTL for Get Data results (same inputs) to speed repeated clicks
+history_max_rows = 500
+qr_cache_size = 20
+spa_cache_ttl_seconds = 15
+
 [SPA_SERVICE]
 username = ""
 password = ""
@@ -85,6 +94,57 @@ class SpaServiceConfig:
 @dataclass(frozen=True)
 class ApplicationConfig:
     environment: str = "production"
+
+
+@dataclass(frozen=True)
+class UiConfig:
+    history_max_rows: int = 500
+    qr_cache_size: int = 20
+    spa_cache_ttl_seconds: int = 15
+
+
+def get_ui_config() -> tuple[UiConfig, str | None]:
+    """Read UI-related config values from [UI] section in config.toml."""
+    cfg, _path, err = load_config_toml()
+    if err:
+        return UiConfig(), err
+
+    ui = cfg.get("UI") if isinstance(cfg, dict) else None
+    if not isinstance(ui, dict):
+        ui = {}
+
+    def _i(key: str, default: int) -> int:
+        try:
+            v = ui.get(key, default)
+            return int(v)
+        except Exception:
+            return default
+
+    history_max_rows = _i("history_max_rows", 500)
+    qr_cache_size = _i("qr_cache_size", 20)
+    spa_cache_ttl_seconds = _i("spa_cache_ttl_seconds", 15)
+
+    # Clamp to sensible ranges (prevents accidental huge values)
+    if history_max_rows <= 0:
+        history_max_rows = 500
+    if history_max_rows > 20000:
+        history_max_rows = 20000
+
+    if qr_cache_size < 0:
+        qr_cache_size = 0
+    if qr_cache_size > 200:
+        qr_cache_size = 200
+
+    if spa_cache_ttl_seconds < 0:
+        spa_cache_ttl_seconds = 0
+    if spa_cache_ttl_seconds > 600:
+        spa_cache_ttl_seconds = 600
+
+    return UiConfig(
+        history_max_rows=history_max_rows,
+        qr_cache_size=qr_cache_size,
+        spa_cache_ttl_seconds=spa_cache_ttl_seconds,
+    ), None
 
 
 def get_application_config() -> tuple[ApplicationConfig, str | None]:

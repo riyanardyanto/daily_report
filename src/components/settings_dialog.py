@@ -1,10 +1,12 @@
 from __future__ import annotations
 
+import asyncio
+
 import flet as ft
 
 from src.utils.helpers import load_settings_options, save_settings_options
 from src.utils.theme import ON_COLOR, PRIMARY, SECONDARY
-from src.utils.ui_helpers import snack
+from src.utils.ui_helpers import open_dialog, snack
 
 
 class SettingsDialog:
@@ -80,31 +82,47 @@ class SettingsDialog:
             except Exception:
                 pass
 
-        # Prefill from current file contents
-        _p_lu, lu_opts, _c_lu, _e_lu = load_settings_options(
-            filename=self.link_up_filename,
-            defaults=list(self.link_up_defaults),
-        )
-        _p_u, user_opts, _c_u, _e_u = load_settings_options(
-            filename=self.user_filename,
-            defaults=list(self.user_defaults),
+        status = ft.Text("Loading…", size=12, italic=True)
+        progress = ft.ProgressRing(width=18, height=18, stroke_width=2)
+
+        loading_overlay = ft.Container(
+            content=ft.Column(
+                controls=[progress, status],
+                horizontal_alignment=ft.CrossAxisAlignment.CENTER,
+                alignment=ft.MainAxisAlignment.CENTER,
+                tight=True,
+                spacing=10,
+            ),
+            alignment=ft.alignment.center,
+            expand=True,
+            visible=True,
         )
 
         lu_text = ft.TextField(
             label="Link Up (one per line)",
-            value="\n".join(lu_opts or []),
+            value="",
             multiline=True,
             min_lines=6,
             max_lines=10,
             text_size=12,
+            disabled=True,
         )
         user_text = ft.TextField(
             label="User (one per line)",
-            value="\n".join(user_opts or []),
+            value="",
             multiline=True,
             min_lines=6,
             max_lines=10,
             text_size=12,
+            disabled=True,
+        )
+
+        save_btn = ft.ElevatedButton(
+            "Save",
+            on_click=lambda _e: None,
+            color=ON_COLOR,
+            bgcolor=PRIMARY,
+            disabled=True,
         )
 
         def _on_save(_e=None):
@@ -117,48 +135,114 @@ class SettingsDialog:
             lu_items = sorted(lu_items, key=_sort_key_link_up)
             user_items = sorted(user_items, key=lambda s: str(s or "").strip().lower())
 
-            p1, ok1, err1 = save_settings_options(
-                filename=self.link_up_filename,
-                options=lu_items,
-            )
-            p2, ok2, err2 = save_settings_options(
-                filename=self.user_filename,
-                options=user_items,
-            )
-
-            if not ok1:
-                snack(page, f"Failed to save Link Up: {err1} ({p1})", kind="error")
-                return
-            if not ok2:
-                snack(page, f"Failed to save User: {err2} ({p2})", kind="error")
-                return
-
             try:
-                if callable(self.on_saved):
-                    self.on_saved()
+                save_btn.disabled = True
+                status.value = "Saving…"
+                progress.visible = True
+                loading_overlay.visible = True
+                page.update()
             except Exception:
                 pass
 
-            snack(page, "Settings saved", kind="success")
-            _close()
+            async def _save_async():
+                try:
+
+                    def _worker_save():
+                        p1, ok1, err1 = save_settings_options(
+                            filename=self.link_up_filename,
+                            options=lu_items,
+                        )
+                        p2, ok2, err2 = save_settings_options(
+                            filename=self.user_filename,
+                            options=user_items,
+                        )
+                        return (p1, ok1, err1, p2, ok2, err2)
+
+                    p1, ok1, err1, p2, ok2, err2 = await asyncio.to_thread(_worker_save)
+
+                    if not ok1:
+                        snack(
+                            page,
+                            f"Failed to save Link Up: {err1} ({p1})",
+                            kind="error",
+                        )
+                        return
+                    if not ok2:
+                        snack(
+                            page,
+                            f"Failed to save User: {err2} ({p2})",
+                            kind="error",
+                        )
+                        return
+
+                    try:
+                        if callable(self.on_saved):
+                            self.on_saved()
+                    except Exception:
+                        pass
+
+                    snack(page, "Settings saved", kind="success")
+                    _close()
+                finally:
+                    try:
+                        progress.visible = False
+                        status.value = ""
+                        loading_overlay.visible = False
+                        save_btn.disabled = False
+                        page.update()
+                    except Exception:
+                        pass
+
+            runner = getattr(page, "run_task", None)
+            if callable(runner):
+                runner(_save_async)
+            else:
+                # Fallback: blocking save
+                p1, ok1, err1 = save_settings_options(
+                    filename=self.link_up_filename,
+                    options=lu_items,
+                )
+                p2, ok2, err2 = save_settings_options(
+                    filename=self.user_filename,
+                    options=user_items,
+                )
+                if not ok1:
+                    snack(page, f"Failed to save Link Up: {err1} ({p1})", kind="error")
+                    return
+                if not ok2:
+                    snack(page, f"Failed to save User: {err2} ({p2})", kind="error")
+                    return
+                try:
+                    if callable(self.on_saved):
+                        self.on_saved()
+                except Exception:
+                    pass
+                snack(page, "Settings saved", kind="success")
+                _close()
 
         self._dlg = ft.AlertDialog(
             modal=True,
             title=ft.Text(self.title),
             content=ft.Container(
-                content=ft.Column(
+                content=ft.Stack(
                     controls=[
-                        ft.Text(
-                            "Edit the options list for the Link Up & User dropdowns.",
-                            size=12,
+                        ft.Column(
+                            controls=[
+                                ft.Text(
+                                    "Edit the options list for the Link Up & User dropdowns.",
+                                    size=12,
+                                ),
+                                ft.Divider(height=10),
+                                lu_text,
+                                ft.Divider(height=10),
+                                user_text,
+                            ],
+                            tight=True,
+                            scroll=ft.ScrollMode.AUTO,
                         ),
-                        ft.Divider(height=10),
-                        lu_text,
-                        ft.Divider(height=10),
-                        user_text,
+                        loading_overlay,
                     ],
-                    tight=True,
-                    scroll=ft.ScrollMode.AUTO,
+                    expand=True,
                 ),
                 width=520,
                 padding=ft.padding.all(12),
@@ -174,12 +258,7 @@ class SettingsDialog:
                             on_click=_close,
                             style=ft.ButtonStyle(color=SECONDARY),
                         ),
-                        ft.ElevatedButton(
-                            "Save",
-                            on_click=_on_save,
-                            color=ON_COLOR,
-                            bgcolor=PRIMARY,
-                        ),
+                        save_btn,
                     ],
                     alignment=ft.MainAxisAlignment.END,
                     spacing=8,
@@ -189,12 +268,82 @@ class SettingsDialog:
             on_dismiss=_close,
         )
 
-        try:
-            page.open(self._dlg)
-        except Exception:
+        open_dialog(page, self._dlg)
+
+        async def _load_async():
             try:
-                page.dialog = self._dlg
-                self._dlg.open = True
+
+                def _worker_load():
+                    return (
+                        load_settings_options(
+                            filename=self.link_up_filename,
+                            defaults=list(self.link_up_defaults),
+                        ),
+                        load_settings_options(
+                            filename=self.user_filename,
+                            defaults=list(self.user_defaults),
+                        ),
+                    )
+
+                (
+                    (p_lu, lu_opts, _c_lu, e_lu),
+                    (p_u, user_opts, _c_u, e_u),
+                ) = await asyncio.to_thread(_worker_load)
+
+                if e_lu:
+                    snack(
+                        page,
+                        f"Link Up options read warning: {e_lu} ({p_lu})",
+                        kind="warning",
+                    )
+                if e_u:
+                    snack(
+                        page,
+                        f"User options read warning: {e_u} ({p_u})",
+                        kind="warning",
+                    )
+
+                lu_text.value = "\n".join(lu_opts or [])
+                user_text.value = "\n".join(user_opts or [])
+                lu_text.disabled = False
+                user_text.disabled = False
+                save_btn.disabled = False
+
+                progress.visible = False
+                status.value = ""
+                loading_overlay.visible = False
+                page.update()
+            except Exception as ex:
+                progress.visible = False
+                status.value = f"Failed to load: {ex}"
+                loading_overlay.visible = True
+                try:
+                    page.update()
+                except Exception:
+                    pass
+
+        runner = getattr(page, "run_task", None)
+        if callable(runner):
+            runner(_load_async)
+        else:
+            # Fallback: blocking load
+            _p_lu, lu_opts, _c_lu, _e_lu = load_settings_options(
+                filename=self.link_up_filename,
+                defaults=list(self.link_up_defaults),
+            )
+            _p_u, user_opts, _c_u, _e_u = load_settings_options(
+                filename=self.user_filename,
+                defaults=list(self.user_defaults),
+            )
+            lu_text.value = "\n".join(lu_opts or [])
+            user_text.value = "\n".join(user_opts or [])
+            lu_text.disabled = False
+            user_text.disabled = False
+            save_btn.disabled = False
+            progress.visible = False
+            status.value = ""
+            loading_overlay.visible = False
+            try:
                 page.update()
             except Exception:
                 pass

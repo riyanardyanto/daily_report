@@ -1,13 +1,15 @@
 from __future__ import annotations
 
+import asyncio
 import csv
 from collections import deque
 from pathlib import Path
 
 import flet as ft
 
+from src.services.config_service import get_ui_config
 from src.utils.theme import ON_COLOR, PRIMARY, SECONDARY
-from src.utils.ui_helpers import snack
+from src.utils.ui_helpers import open_dialog, snack
 
 
 class HistoryTableDialog:
@@ -19,14 +21,19 @@ class HistoryTableDialog:
         title: str = "History Table",
         hidden_columns: set[str] | None = None,
         export_default_name: str = "history_export.csv",
-        max_rows: int = 1000,
+        max_rows: int | None = None,
     ):
         self.page = page
         self.csv_path = Path(csv_path)
         self.title = title
         self.hidden_columns = set(hidden_columns or set())
         self.export_default_name = export_default_name
-        self.max_rows = int(max_rows or 0) if max_rows is not None else 1000
+
+        if max_rows is None:
+            ui_cfg, _err = get_ui_config()
+            max_rows = getattr(ui_cfg, "history_max_rows", 500)
+
+        self.max_rows = int(max_rows or 0) if max_rows is not None else 500
 
         self._dlg: ft.AlertDialog | None = None
         self._prev_on_resize = None
@@ -44,6 +51,9 @@ class HistoryTableDialog:
         self._total_rows: int = 0
         self._base_rows_data: list[dict] = []
         self._title_text: ft.Text | None = None
+
+        # Cache for computed column widths to avoid repeated per-cell work.
+        self._last_column_widths: dict[str, int] | None = None
 
         # Column sizing rules:
         # - issue/detail/action: stretch equally to fill remaining width
@@ -66,6 +76,9 @@ class HistoryTableDialog:
         self._min_stretch_width_px = 200
         self._width_padding_px = 48
 
+        # Used to ignore stale async filter results.
+        self._filter_seq: int = 0
+
     def show(self):
         page = self.page
         if page is None:
@@ -75,11 +88,254 @@ class HistoryTableDialog:
             snack(page, f"History not found: {self.csv_path}", kind="warning")
             return
 
+        # Open a lightweight dialog immediately (prevents perceived "hang").
+        self._title_text = ft.Text(f"{self.title} (loading…)")
+        loading_ring = ft.ProgressRing()
+        loading_text = ft.Text("Loading history…", size=12)
+
+        loading_overlay = ft.Container(
+            content=ft.Column(
+                controls=[loading_ring, loading_text],
+                horizontal_alignment=ft.CrossAxisAlignment.CENTER,
+                alignment=ft.MainAxisAlignment.CENTER,
+                tight=True,
+                spacing=10,
+            ),
+            alignment=ft.alignment.center,
+            expand=True,
+            visible=True,
+        )
+
+        self._content_container = ft.Container(
+            content=ft.Stack(
+                controls=[
+                    ft.Container(expand=True),
+                    loading_overlay,
+                ],
+                expand=True,
+            ),
+            width=900,
+            height=500,
+            padding=ft.padding.all(12),
+            bgcolor=ft.Colors.WHITE,
+            border=ft.border.all(1, ft.Colors.BLACK12),
+            border_radius=10,
+        )
+
+        self._dlg = ft.AlertDialog(
+            modal=True,
+            title=self._title_text,
+            content=self._content_container,
+            actions=[
+                ft.Row(
+                    controls=[
+                        ft.TextButton(
+                            "Close",
+                            on_click=self.close,
+                            style=ft.ButtonStyle(color=SECONDARY),
+                        )
+                    ],
+                    alignment=ft.MainAxisAlignment.END,
+                    spacing=8,
+                )
+            ],
+            actions_alignment=ft.MainAxisAlignment.END,
+            on_dismiss=self.close,
+        )
+
+        open_dialog(page, self._dlg)
+
+        async def _load_async():
+            try:
+
+                def _read_csv():
+                    with self.csv_path.open("r", newline="", encoding="utf-8-sig") as f:
+                        reader = csv.DictReader(f)
+                        fieldnames = list(reader.fieldnames or [])
+                        max_rows = self.max_rows if self.max_rows > 0 else 1000
+                        tail = deque(maxlen=max_rows)
+                        total_rows = 0
+                        for row in reader:
+                            total_rows += 1
+                            tail.append(row)
+                        rows_data = list(tail)
+                    return fieldnames, total_rows, rows_data
+
+                fieldnames, total_rows, rows_data = await asyncio.to_thread(_read_csv)
+
+                self._total_rows = int(total_rows)
+                self._base_rows_data = list(rows_data)
+
+                if not fieldnames:
+                    snack(page, "History CSV has no header", kind="warning")
+                    return
+
+                visible_fields = [c for c in fieldnames if c not in self.hidden_columns]
+                if not visible_fields:
+                    snack(
+                        page,
+                        "History CSV has no columns to display",
+                        kind="warning",
+                    )
+                    return
+
+                self._fieldnames = visible_fields
+                self._rows_data = list(rows_data)
+                self._filtered_rows_data = list(rows_data)
+
+                self._prev_on_resize = getattr(page, "on_resize", None)
+
+                self._file_picker.on_result = self._on_export_result
+
+                self._filter_tf = ft.TextField(
+                    label="Search",
+                    hint_text="Type to search, then press Enter...",
+                    text_size=12,
+                    dense=True,
+                    on_submit=self._apply_filter,
+                    expand=True,
+                )
+
+                self._dt = ft.DataTable(
+                    columns=[
+                        ft.DataColumn(
+                            ft.Container(
+                                content=ft.Text(
+                                    (
+                                        {
+                                            "link_up": "lu",
+                                            "func_location": "fl",
+                                            "date_field": "date",
+                                            "shift": "shift",
+                                        }.get(name, name)
+                                    ).upper(),
+                                    size=11,
+                                    weight=ft.FontWeight.W_600,
+                                ),
+                                width=self._get_column_width(name),
+                            )
+                        )
+                        for name in self._fieldnames
+                    ],
+                    rows=self._build_rows(
+                        self._filtered_rows_data,
+                        self._get_column_widths_snapshot(),
+                    ),
+                    border=ft.border.all(1, ft.Colors.BLACK12),
+                    heading_row_color=ft.Colors.BLUE_GREY_50,
+                    data_row_max_height=100,
+                    data_row_min_height=40,
+                    heading_row_height=34,
+                    vertical_lines=ft.BorderSide(1, ft.Colors.BLACK12),
+                    horizontal_lines=ft.BorderSide(1, ft.Colors.BLACK12),
+                    column_spacing=15,
+                    width=900,
+                )
+
+                new_content = ft.Column(
+                    controls=[
+                        ft.Row(
+                            [
+                                self._filter_tf,
+                                ft.Text(str(self.csv_path), size=11, italic=True),
+                            ],
+                        ),
+                        ft.Container(
+                            content=ft.Column(
+                                controls=[
+                                    ft.Row(
+                                        controls=[self._dt],
+                                        scroll=ft.ScrollMode.AUTO,
+                                        alignment=ft.MainAxisAlignment.END,
+                                    )
+                                ],
+                                scroll=ft.ScrollMode.AUTO,
+                                expand=True,
+                            ),
+                            expand=True,
+                        ),
+                    ],
+                    expand=True,
+                    spacing=8,
+                    scroll=None,
+                    alignment=ft.MainAxisAlignment.START,
+                )
+
+                # Keep the same container instance to avoid UID/assert issues.
+                if self._content_container is not None:
+                    self._content_container.content = new_content
+                    self._content_container.width = 1200
+                    self._content_container.height = 650
+                    self._content_container.expand = True
+
+                # Update existing dialog instead of creating a new one.
+                if self._title_text is not None:
+                    self._title_text.value = f"{self.title} (showing {len(self._rows_data)} of {total_rows} rows)"
+
+                if self._dlg is not None:
+                    self._dlg.actions = [
+                        ft.Row(
+                            controls=[
+                                ft.TextButton(
+                                    "Close",
+                                    on_click=self.close,
+                                    style=ft.ButtonStyle(color=SECONDARY),
+                                ),
+                                ft.ElevatedButton(
+                                    "Export",
+                                    on_click=self._on_export_click,
+                                    color=ON_COLOR,
+                                    bgcolor=PRIMARY,
+                                ),
+                            ],
+                            alignment=ft.MainAxisAlignment.END,
+                            spacing=8,
+                        )
+                    ]
+
+                try:
+                    page.on_resize = self._on_resize
+                except Exception:
+                    pass
+
+                self._apply_responsive_size()
+                self._apply_column_widths()
+
+                try:
+                    if self._content_container is not None:
+                        self._content_container.update()
+                except Exception:
+                    pass
+
+                try:
+                    if self._dlg is not None:
+                        self._dlg.update()
+                except Exception:
+                    pass
+
+                try:
+                    page.update()
+                except Exception:
+                    pass
+
+            except Exception as ex:
+                snack(page, f"Failed to read history.csv: {ex}", kind="error")
+
+        # Run in background if available; otherwise run synchronously (may block).
+        try:
+            runner = getattr(page, "run_task", None)
+            if callable(runner):
+                # IMPORTANT: pass coroutine function (not coroutine object)
+                runner(_load_async)
+                return
+        except Exception:
+            pass
+
+        # Fallback: synchronous load
         try:
             with self.csv_path.open("r", newline="", encoding="utf-8-sig") as f:
                 reader = csv.DictReader(f)
                 fieldnames = list(reader.fieldnames or [])
-                # Stream rows so memory doesn't grow with the file size.
                 max_rows = self.max_rows if self.max_rows > 0 else 1000
                 tail = deque(maxlen=max_rows)
                 total_rows = 0
@@ -88,6 +344,9 @@ class HistoryTableDialog:
                     tail.append(row)
                 rows_data = list(tail)
 
+            # Re-run the same setup path on the current thread by invoking the async logic body.
+            # This keeps behavior consistent for older runtimes.
+            # Note: no asyncio loop here; just perform the same steps inline.
             self._total_rows = int(total_rows)
             self._base_rows_data = list(rows_data)
 
@@ -97,11 +356,7 @@ class HistoryTableDialog:
 
             visible_fields = [c for c in fieldnames if c not in self.hidden_columns]
             if not visible_fields:
-                snack(
-                    page,
-                    "History CSV has no columns to display",
-                    kind="warning",
-                )
+                snack(page, "History CSV has no columns to display", kind="warning")
                 return
 
             self._fieldnames = visible_fields
@@ -109,7 +364,6 @@ class HistoryTableDialog:
             self._filtered_rows_data = list(rows_data)
 
             self._prev_on_resize = getattr(page, "on_resize", None)
-
             self._file_picker.on_result = self._on_export_result
 
             self._filter_tf = ft.TextField(
@@ -142,7 +396,10 @@ class HistoryTableDialog:
                     )
                     for name in self._fieldnames
                 ],
-                rows=self._build_rows(self._filtered_rows_data),
+                rows=self._build_rows(
+                    self._filtered_rows_data,
+                    self._get_column_widths_snapshot(),
+                ),
                 border=ft.border.all(1, ft.Colors.BLACK12),
                 heading_row_color=ft.Colors.BLUE_GREY_50,
                 data_row_max_height=100,
@@ -154,53 +411,46 @@ class HistoryTableDialog:
                 width=900,
             )
 
-            self._content_container = ft.Container(
-                content=ft.Column(
-                    controls=[
-                        ft.Row(
-                            [
-                                self._filter_tf,
-                                ft.Text(str(self.csv_path), size=11, italic=True),
+            new_content = ft.Column(
+                controls=[
+                    ft.Row(
+                        [
+                            self._filter_tf,
+                            ft.Text(str(self.csv_path), size=11, italic=True),
+                        ],
+                    ),
+                    ft.Container(
+                        content=ft.Column(
+                            controls=[
+                                ft.Row(
+                                    controls=[self._dt],
+                                    scroll=ft.ScrollMode.AUTO,
+                                    alignment=ft.MainAxisAlignment.END,
+                                )
                             ],
-                        ),
-                        ft.Container(
-                            content=ft.Column(
-                                controls=[
-                                    ft.Row(
-                                        controls=[self._dt],
-                                        scroll=ft.ScrollMode.AUTO,
-                                        alignment=ft.MainAxisAlignment.END,
-                                    )
-                                ],
-                                scroll=ft.ScrollMode.AUTO,
-                                expand=True,
-                            ),
+                            scroll=ft.ScrollMode.AUTO,
                             expand=True,
                         ),
-                    ],
-                    expand=True,
-                    spacing=8,
-                    scroll=None,
-                    alignment=ft.MainAxisAlignment.START,
-                ),
-                width=1200,
-                height=650,
-                padding=ft.padding.all(12),
-                bgcolor=ft.Colors.WHITE,
-                border=ft.border.all(1, ft.Colors.BLACK12),
-                border_radius=10,
+                        expand=True,
+                    ),
+                ],
                 expand=True,
+                spacing=8,
+                scroll=None,
+                alignment=ft.MainAxisAlignment.START,
             )
 
-            self._title_text = ft.Text(
-                f"{self.title} (showing {len(self._rows_data)} of {total_rows} rows)"
-            )
+            if self._content_container is not None:
+                self._content_container.content = new_content
+                self._content_container.width = 1200
+                self._content_container.height = 650
+                self._content_container.expand = True
 
-            self._dlg = ft.AlertDialog(
-                modal=True,
-                title=self._title_text,
-                content=self._content_container,
-                actions=[
+            if self._title_text is not None:
+                self._title_text.value = f"{self.title} (showing {len(self._rows_data)} of {total_rows} rows)"
+
+            if self._dlg is not None:
+                self._dlg.actions = [
                     ft.Row(
                         controls=[
                             ft.TextButton(
@@ -218,10 +468,7 @@ class HistoryTableDialog:
                         alignment=ft.MainAxisAlignment.END,
                         spacing=8,
                     )
-                ],
-                actions_alignment=ft.MainAxisAlignment.END,
-                on_dismiss=self.close,
-            )
+                ]
 
             try:
                 page.on_resize = self._on_resize
@@ -232,12 +479,17 @@ class HistoryTableDialog:
             self._apply_column_widths()
 
             try:
-                page.open(self._dlg)
+                if self._content_container is not None:
+                    self._content_container.update()
             except Exception:
-                page.dialog = self._dlg
-                self._dlg.open = True
-                page.update()
+                pass
 
+            try:
+                if self._dlg is not None:
+                    self._dlg.update()
+            except Exception:
+                pass
+            page.update()
         except Exception as ex:
             snack(page, f"Failed to read history.csv: {ex}", kind="error")
 
@@ -255,6 +507,39 @@ class HistoryTableDialog:
             reader = csv.DictReader(f)
             for row in reader:
                 if self._row_matches(row, q):
+                    matches_total += 1
+                    tail.append(row)
+
+        return matches_total, list(tail)
+
+    def _read_filtered_rows_for_fields(
+        self, q: str, fieldnames: list[str]
+    ) -> tuple[int, list[dict]]:
+        """Thread-friendly variant: uses provided fieldnames snapshot."""
+        q = str(q or "").strip()
+        if not q:
+            return 0, []
+
+        max_rows = self.max_rows if self.max_rows > 0 else 1000
+        tail = deque(maxlen=max_rows)
+        matches_total = 0
+
+        q_l = q.lower()
+
+        def _row_matches_fields(row_obj: dict) -> bool:
+            try:
+                for col in fieldnames:
+                    v = str((row_obj or {}).get(col, "") or "")
+                    if q_l in v.lower():
+                        return True
+            except Exception:
+                return True
+            return False
+
+        with self.csv_path.open("r", newline="", encoding="utf-8-sig") as f:
+            reader = csv.DictReader(f)
+            for row in reader:
+                if _row_matches_fields(row):
                     matches_total += 1
                     tail.append(row)
 
@@ -306,24 +591,56 @@ class HistoryTableDialog:
             self._export_rows_to_path(export_path)
 
     def _export_rows_to_path(self, export_path: str):
+        page = self.page
         try:
             p = str(export_path or "").strip()
             if not p:
                 return
 
-            with open(p, "w", newline="", encoding="utf-8-sig") as f:
-                writer = csv.DictWriter(f, fieldnames=self._fieldnames)
-                writer.writeheader()
-                for row_obj in self._filtered_rows_data:
-                    out = {
-                        c: str((row_obj or {}).get(c, "") or "")
-                        for c in self._fieldnames
-                    }
-                    writer.writerow(out)
+            # Snapshot data on UI thread
+            fieldnames = list(self._fieldnames or [])
+            rows_data = list(self._filtered_rows_data or [])
 
-            snack(self.page, f"Export successful: {p}", kind="success")
+            try:
+                snack(page, "Exporting…", kind="warning")
+            except Exception:
+                pass
+
+            async def _export_async():
+                try:
+
+                    def _worker_write():
+                        with open(p, "w", newline="", encoding="utf-8-sig") as f:
+                            writer = csv.DictWriter(f, fieldnames=fieldnames)
+                            writer.writeheader()
+                            for row_obj in rows_data:
+                                out = {
+                                    c: str((row_obj or {}).get(c, "") or "")
+                                    for c in fieldnames
+                                }
+                                writer.writerow(out)
+
+                    await asyncio.to_thread(_worker_write)
+                    snack(page, f"Export successful: {p}", kind="success")
+                except Exception as ex:
+                    snack(page, f"Failed to export CSV: {ex}", kind="error")
+
+            runner = getattr(page, "run_task", None)
+            if callable(runner):
+                runner(_export_async)
+            else:
+                # Fallback: blocking export
+                with open(p, "w", newline="", encoding="utf-8-sig") as f:
+                    writer = csv.DictWriter(f, fieldnames=fieldnames)
+                    writer.writeheader()
+                    for row_obj in rows_data:
+                        out = {
+                            c: str((row_obj or {}).get(c, "") or "") for c in fieldnames
+                        }
+                        writer.writerow(out)
+                snack(page, f"Export successful: {p}", kind="success")
         except Exception as ex:
-            snack(self.page, f"Failed to export CSV: {ex}", kind="error")
+            snack(page, f"Failed to export CSV: {ex}", kind="error")
 
     def _row_matches(self, row_obj: dict, q: str) -> bool:
         if not q:
@@ -338,8 +655,22 @@ class HistoryTableDialog:
             return True
         return False
 
-    def _build_rows(self, filtered: list[dict]) -> list[ft.DataRow]:
+    def _get_column_widths_snapshot(self) -> dict[str, int]:
+        """Return a dict of column widths for current fieldnames."""
+        widths: dict[str, int] = {}
+        for col in self._fieldnames:
+            try:
+                widths[col] = int(self._get_column_width(col))
+            except Exception:
+                widths[col] = int(self._default_fixed_width_px)
+        return widths
+
+    def _build_rows(
+        self, filtered: list[dict], widths: dict[str, int] | None = None
+    ) -> list[ft.DataRow]:
         out_rows: list[ft.DataRow] = []
+        if widths is None:
+            widths = self._get_column_widths_snapshot()
         for row_obj in filtered:
             cells: list[ft.DataCell] = []
             for col in self._fieldnames:
@@ -347,11 +678,12 @@ class HistoryTableDialog:
                     value = str((row_obj or {}).get(col, "") or "")
                 except Exception:
                     value = ""
+                w = int(widths.get(col, self._default_fixed_width_px))
                 cells.append(
                     ft.DataCell(
                         ft.Container(
                             content=ft.Text(value, size=11),
-                            width=self._get_column_width(col),
+                            width=w,
                         )
                     )
                 )
@@ -359,41 +691,140 @@ class HistoryTableDialog:
         return out_rows
 
     def _apply_filter(self, _e=None):
+        page = self.page
         try:
             q = str(getattr(self._filter_tf, "value", "") or "").strip()
 
-            # Empty query: restore the initial tail view.
+            # Empty query: restore the initial tail view immediately.
             if not q:
                 self._rows_data = list(self._base_rows_data)
                 self._filtered_rows_data = list(self._base_rows_data)
                 if self._title_text is not None:
                     self._title_text.value = f"{self.title} (showing {len(self._rows_data)} of {self._total_rows} rows)"
-                if self._dlg is not None:
+                if self._dt is not None:
+                    widths = self._get_column_widths_snapshot()
+                    self._dt.rows = self._build_rows(self._filtered_rows_data, widths)
                     try:
-                        self._dlg.update()
+                        self._dt.update()
                     except Exception:
                         pass
-            else:
-                # Option A: stream-read the full CSV and filter across the entire file.
-                matches_total, matches_tail = self._read_filtered_rows(q)
-                self._filtered_rows_data = list(matches_tail)
+                try:
+                    if self._filter_tf is not None:
+                        self._filter_tf.disabled = False
+                        self._filter_tf.update()
+                except Exception:
+                    pass
+                return
+
+            # Non-empty query: run full-file filtering off the UI thread.
+            self._filter_seq += 1
+            seq = int(self._filter_seq)
+
+            # Update title + disable input to signal work in progress.
+            try:
                 if self._title_text is not None:
-                    self._title_text.value = f"{self.title} (showing {len(self._filtered_rows_data)} of {matches_total} matches)"
+                    self._title_text.value = f"{self.title} (filtering…)"
+                if self._filter_tf is not None:
+                    self._filter_tf.disabled = True
                 if self._dlg is not None:
+                    self._dlg.update()
+            except Exception:
+                pass
+
+            fields_snapshot = list(self._fieldnames or [])
+            q_snapshot = str(q)
+
+            async def _filter_async():
+                try:
+                    matches_total, matches_tail = await asyncio.to_thread(
+                        self._read_filtered_rows_for_fields, q_snapshot, fields_snapshot
+                    )
+
+                    # Ignore stale results.
+                    if seq != self._filter_seq:
+                        return
+
+                    self._filtered_rows_data = list(matches_tail)
+
+                    if self._title_text is not None:
+                        self._title_text.value = f"{self.title} (showing {len(self._filtered_rows_data)} of {matches_total} matches)"
+
+                    if self._dt is not None:
+                        widths = self._get_column_widths_snapshot()
+                        self._dt.rows = self._build_rows(
+                            self._filtered_rows_data, widths
+                        )
+                        try:
+                            self._dt.update()
+                        except Exception:
+                            pass
+
                     try:
-                        self._dlg.update()
+                        if self._filter_tf is not None:
+                            self._filter_tf.disabled = False
+                            self._filter_tf.update()
                     except Exception:
                         pass
 
+                    try:
+                        if page is not None:
+                            page.update()
+                    except Exception:
+                        pass
+                except Exception as ex:
+                    if seq != self._filter_seq:
+                        return
+                    try:
+                        if self._title_text is not None:
+                            self._title_text.value = f"{self.title} (filter failed)"
+                        if self._filter_tf is not None:
+                            self._filter_tf.disabled = False
+                            self._filter_tf.update()
+                    except Exception:
+                        pass
+                    try:
+                        if page is not None:
+                            snack(page, f"Filter failed: {ex}", kind="error")
+                    except Exception:
+                        pass
+
+            # Use run_task if available; otherwise fall back to sync filtering.
+            try:
+                runner = getattr(page, "run_task", None)
+                if callable(runner):
+                    # IMPORTANT: pass coroutine function (not coroutine object)
+                    runner(_filter_async)
+                    return
+            except Exception:
+                pass
+
+            # Sync fallback
+            matches_total, matches_tail = self._read_filtered_rows(q_snapshot)
+            if seq != self._filter_seq:
+                return
+            self._filtered_rows_data = list(matches_tail)
+            if self._title_text is not None:
+                self._title_text.value = f"{self.title} (showing {len(self._filtered_rows_data)} of {matches_total} matches)"
             if self._dt is not None:
-                self._dt.rows = self._build_rows(self._filtered_rows_data)
-                self._apply_column_widths()
+                widths = self._get_column_widths_snapshot()
+                self._dt.rows = self._build_rows(self._filtered_rows_data, widths)
                 try:
                     self._dt.update()
                 except Exception:
                     pass
+            try:
+                if self._filter_tf is not None:
+                    self._filter_tf.disabled = False
+                    self._filter_tf.update()
+            except Exception:
+                pass
         except Exception:
-            pass
+            try:
+                if self._filter_tf is not None:
+                    self._filter_tf.disabled = False
+                    self._filter_tf.update()
+            except Exception:
+                pass
 
     def _get_column_width(self, col_name: str) -> int:
         name = str(col_name or "")
@@ -441,13 +872,21 @@ class HistoryTableDialog:
 
         self._recompute_stretch_width()
 
+        # Compute new widths and short-circuit if nothing changed.
+        widths = self._get_column_widths_snapshot()
+        if self._last_column_widths == widths:
+            return
+        self._last_column_widths = dict(widths)
+
         try:
             for i, col_name in enumerate(self._fieldnames):
                 try:
                     col_obj = self._dt.columns[i]
                     label = getattr(col_obj, "label", None)
                     if isinstance(label, ft.Container):
-                        label.width = self._get_column_width(col_name)
+                        label.width = int(
+                            widths.get(col_name, self._default_fixed_width_px)
+                        )
                 except Exception:
                     pass
 
@@ -457,7 +896,9 @@ class HistoryTableDialog:
                         cell = row.cells[i]
                         content = getattr(cell, "content", None)
                         if isinstance(content, ft.Container):
-                            content.width = self._get_column_width(col_name)
+                            content.width = int(
+                                widths.get(col_name, self._default_fixed_width_px)
+                            )
                 except Exception:
                     pass
 
