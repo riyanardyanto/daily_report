@@ -6,6 +6,8 @@ from pathlib import Path
 import flet as ft
 
 from src.app import DashboardApp
+from src.core.context import build_context
+from src.core.safe import safe_event
 from src.utils.helpers import get_data_app_dir, resource_path
 
 
@@ -21,7 +23,8 @@ def _main(page: ft.Page) -> None:
     # Softer neutral background improves contrast and reduces visual noise.
     page.bgcolor = ft.Colors.BLUE_GREY_50
 
-    dashboard = DashboardApp(page)
+    ctx = build_context(page, logger_name="daily_report")
+    dashboard = DashboardApp(page, ctx=ctx)
     page.add(dashboard)
 
     def _on_resize(_e=None):
@@ -31,7 +34,7 @@ def _main(page: ft.Page) -> None:
             pass
 
     # Keep the dashboard responsive.
-    page.on_resize = _on_resize
+    page.on_resize = safe_event(_on_resize, label="page.on_resize")
     _on_resize()
     page.update()
 

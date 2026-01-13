@@ -66,8 +66,8 @@ class QrCodeDialog:
         page: ft.Page,
         payload: str,
         title: str = "QR Code",
-        width: int = 400,
-        height: int = 400,
+        width: int = 500,
+        height: int = 500,
     ):
         self.page = page
         self.payload = payload

@@ -1,7 +1,3 @@
-import asyncio
-import time
-import traceback
-
 import flet as ft
 import pandas as pd
 
@@ -11,41 +7,38 @@ from src.components.report_editor import ReportEditor
 from src.components.report_list_view import ReportList
 from src.components.sidebar import Sidebar
 from src.components.stops_table import StopsTable
-from src.services.config_service import (
-    get_application_config,
-    get_spa_credentials,
-    get_spa_service_config,
-    get_ui_config,
-)
-from src.services.spa_service import (
-    fetch_data_from_api,
-    get_data_actual,
-    get_data_range,
-    get_line_performance_details,
-    get_url_spa,
-    process_data,
-)
-from src.utils.helpers import data_app_path, load_targets_csv
+from src.core.context import AppContext, build_context
+from src.core.errors import capture_traceback, report_exception, report_exception_sync
+from src.core.logging import get_logger
+from src.core.safe import safe_event
+from src.services.config_service import get_ui_config
+from src.services.spa_facade import SpaFacade, SpaRequest
 from src.utils.ui_helpers import snack
 
 
 class DashboardApp(ft.Container):
-    def __init__(self, page: ft.Page | None = None):
+    def __init__(self, page: ft.Page | None = None, *, ctx: AppContext | None = None):
         super().__init__()
-        self._page = page
+        if ctx is None and page is not None:
+            try:
+                ctx = build_context(page, logger_name="daily_report")
+            except Exception:
+                ctx = None
+
+        self._ctx = ctx
+        self._page = page or (ctx.page if ctx is not None else None)
+        self._logger = get_logger("dashboard")
         self._is_compact = False
 
         # Debug logging (avoid noisy/slow prints in production hot paths)
         self._env_lower = "production"
         self._debug_enabled = False
         try:
-            app_cfg, _app_err = get_application_config()
-            self._env_lower = (
-                str(getattr(app_cfg, "environment", "production") or "production")
-                .strip()
-                .lower()
-            )
-            self._debug_enabled = self._env_lower != "production"
+            if ctx is not None:
+                self._env_lower = (
+                    str(ctx.app.environment or "production").strip().lower()
+                )
+                self._debug_enabled = self._env_lower != "production"
         except Exception:
             self._env_lower = "production"
             self._debug_enabled = False
@@ -59,12 +52,29 @@ class DashboardApp(ft.Container):
         ] = {}
         self._spa_cache_ttl_s = 15.0
         try:
-            ui_cfg, _ui_err = get_ui_config()
-            self._spa_cache_ttl_s = float(
-                getattr(ui_cfg, "spa_cache_ttl_seconds", 15) or 0
-            )
+            if ctx is not None:
+                self._spa_cache_ttl_s = float(
+                    getattr(ctx.ui, "spa_cache_ttl_seconds", 15) or 0
+                )
+            else:
+                ui_cfg, _ui_err = get_ui_config()
+                self._spa_cache_ttl_s = float(
+                    getattr(ui_cfg, "spa_cache_ttl_seconds", 15) or 0
+                )
         except Exception:
             self._spa_cache_ttl_s = 15.0
+
+        # Move SPA fetch/transform logic behind a facade for maintainability.
+        self._spa_facade: SpaFacade | None = None
+        try:
+            if self._ctx is not None:
+                self._spa_facade = SpaFacade(
+                    self._ctx,
+                    cache_ttl_s=float(self._spa_cache_ttl_s or 0.0),
+                    cache=self._spa_cache,
+                )
+        except Exception:
+            self._spa_facade = None
 
         self.spa_df: pd.DataFrame | None = None
         self.sidebar = Sidebar()
@@ -113,7 +123,10 @@ class DashboardApp(ft.Container):
             padding=10,
         )
         # create if button get data is clicked in sidebar, then update the report content
-        self.sidebar.get_data_button.on_click = self.update_tables
+        self.sidebar.get_data_button.on_click = safe_event(
+            self.update_tables,
+            label="sidebar.get_data_button.on_click",
+        )
         # allow stops_table to push selected row details into report content via callback (already set on construction)
         self.progress_bar = ft.ProgressBar(
             # bar_height=600,
@@ -262,7 +275,8 @@ class DashboardApp(ft.Container):
         if not bool(getattr(self, "_debug_enabled", False)):
             return
         try:
-            print(*args, **kwargs)
+            msg = " ".join(str(a) for a in args)
+            self._logger.debug(msg)
         except Exception:
             pass
 
@@ -318,7 +332,7 @@ class DashboardApp(ft.Container):
         except Exception:
             pass
 
-    def update_tables(self, e=None):
+    def _resolve_page(self, e=None) -> ft.Page | None:
         page = None
         try:
             page = getattr(e, "page", None) if e is not None else None
@@ -337,7 +351,11 @@ class DashboardApp(ft.Container):
             except Exception:
                 page = None
 
-        # Snapshot sidebar values on UI thread to avoid reading UI controls in worker thread.
+        return page
+
+    def _snapshot_sidebar_values(self) -> tuple[str, str, str, str]:
+        """Read UI controls safely on the UI thread."""
+
         link_up = ""
         date_value = ""
         shift_value = ""
@@ -373,249 +391,148 @@ class DashboardApp(ft.Container):
         except Exception:
             func_location = "PACK"
 
-        existing_metrics: list[str] = []
+        return link_up, date_value, shift_value, func_location
+
+    def _snapshot_existing_metrics(self) -> list[str]:
         try:
             existing_rows = self.metrics_table.get_rows_data()
-            existing_metrics = [
+            return [
                 str(m or "").strip()
                 for m, _t, _a in (existing_rows or [])
                 if str(m or "").strip()
             ]
         except Exception:
-            existing_metrics = []
+            return []
 
-        # Seq guard: ignore stale results from previous clicks.
+    def _bump_getdata_seq(self) -> int:
         try:
             self._getdata_seq += 1
         except Exception:
             self._getdata_seq = 1
-        my_seq = int(getattr(self, "_getdata_seq", 1) or 1)
+        return int(getattr(self, "_getdata_seq", 1) or 1)
+
+    def _is_stale_seq(self, my_seq: int) -> bool:
+        try:
+            return my_seq != int(getattr(self, "_getdata_seq", my_seq) or my_seq)
+        except Exception:
+            return False
+
+    def _set_loading(self, page: ft.Page | None, *, loading: bool, status: str = ""):
+        try:
+            if getattr(self, "progress_bar", None) is not None:
+                self.progress_bar.visible = bool(loading)
+            if getattr(self, "status_bar", None) is not None and status:
+                self.status_bar.value = str(status)
+            if page is not None:
+                page.update()
+        except Exception:
+            pass
+
+    def _ensure_spa_facade(self, page: ft.Page | None) -> SpaFacade | None:
+        facade = getattr(self, "_spa_facade", None)
+        if facade is not None:
+            return facade
+
+        try:
+            if getattr(self, "_ctx", None) is None and page is not None:
+                try:
+                    self._ctx = build_context(page, logger_name="daily_report")
+                except Exception:
+                    self._ctx = None
+
+            if getattr(self, "_ctx", None) is None:
+                return None
+
+            facade = SpaFacade(
+                self._ctx,
+                cache_ttl_s=float(getattr(self, "_spa_cache_ttl_s", 0.0) or 0.0),
+                cache=getattr(self, "_spa_cache", None),
+            )
+            self._spa_facade = facade
+            return facade
+        except Exception:
+            return None
+
+    def _apply_spa_response(self, resp, *, page: ft.Page | None):
+        try:
+            self.spa_df = resp.df
+        except Exception:
+            pass
+
+        try:
+            label = str(resp.rng_str or "")
+            if resp.from_cache:
+                label = f"{label} (Cached)" if label else "Cached"
+            self.status_bar.value = label
+        except Exception:
+            pass
+
+        try:
+            self.metrics_table.set_rows(resp.metrics_rows)
+        except Exception:
+            pass
+
+        try:
+            self.stops_table.set_rows(resp.stops_rows)
+        except Exception:
+            pass
+
+    def _build_spa_request(
+        self,
+        *,
+        link_up: str,
+        date_value: str,
+        shift_value: str,
+        func_location: str,
+        existing_metrics: list[str],
+    ) -> SpaRequest:
+        """Build a SpaRequest from already-snapshotted UI values."""
+
+        return SpaRequest(
+            link_up=str(link_up or ""),
+            date_value=str(date_value or ""),
+            shift_value=str(shift_value or ""),
+            func_location=str(func_location or "PACK"),
+            existing_metrics=list(existing_metrics or []),
+        )
+
+    def update_tables(self, e=None):
+        page = self._resolve_page(e)
+
+        # Snapshot sidebar values on UI thread to avoid reading UI controls in worker thread.
+        link_up, date_value, shift_value, func_location = (
+            self._snapshot_sidebar_values()
+        )
+        existing_metrics = self._snapshot_existing_metrics()
+
+        # Seq guard: ignore stale results from previous clicks.
+        my_seq = self._bump_getdata_seq()
 
         async def _run():
             # Show progress immediately.
-            try:
-                if getattr(self, "progress_bar", None) is not None:
-                    self.progress_bar.visible = True
-                if getattr(self, "status_bar", None) is not None:
-                    self.status_bar.value = "Loading…"
-                if page is not None:
-                    page.update()
-            except Exception:
-                pass
+            self._set_loading(page, loading=True, status="Loading…")
 
             try:
-                # Load config once (UI thread) to decide logging behavior.
-                env_lower = "production"
-                try:
-                    app_cfg, _app_err = get_application_config()
-                    env_lower = (
-                        str(
-                            getattr(app_cfg, "environment", "production")
-                            or "production"
-                        )
-                        .strip()
-                        .lower()
-                    )
-                except Exception:
-                    env_lower = "production"
+                facade = self._ensure_spa_facade(page)
 
-                # Fast-path cache for repeated clicks with same inputs (short TTL).
-                cache_key = (
-                    str(env_lower or ""),
-                    str(link_up or ""),
-                    str(date_value or ""),
-                    str(shift_value or ""),
-                    str(func_location or ""),
+                if facade is None:
+                    raise RuntimeError("SPA facade not initialized")
+
+                req = self._build_spa_request(
+                    link_up=link_up,
+                    date_value=date_value,
+                    shift_value=shift_value,
+                    func_location=func_location,
+                    existing_metrics=existing_metrics,
                 )
-                try:
-                    ttl = float(getattr(self, "_spa_cache_ttl_s", 0.0) or 0.0)
-                except Exception:
-                    ttl = 0.0
 
-                if ttl > 0:
-                    try:
-                        cached = self._spa_cache.get(cache_key)
-                    except Exception:
-                        cached = None
-                    if cached is not None:
-                        ts, df, rng_str, metrics_rows, stops_rows = cached
-                        try:
-                            fresh = (time.monotonic() - float(ts)) <= ttl
-                        except Exception:
-                            fresh = False
-
-                        if fresh:
-                            # Ignore stale completion if user clicked again.
-                            if my_seq != int(
-                                getattr(self, "_getdata_seq", my_seq) or my_seq
-                            ):
-                                return
-
-                            try:
-                                self.spa_df = df
-                            except Exception:
-                                pass
-                            try:
-                                cached_label = (
-                                    f"{rng_str} (Cached)" if rng_str else "Cached"
-                                )
-                                self.status_bar.value = cached_label
-                            except Exception:
-                                pass
-                            try:
-                                self.metrics_table.set_rows(metrics_rows)
-                            except Exception:
-                                pass
-                            try:
-                                self.stops_table.set_rows(stops_rows)
-                            except Exception:
-                                pass
-
-                            return
-
-                # Also snapshot SPA config + credentials on UI thread.
-                spa_cfg, spa_err = get_spa_service_config()
-                if spa_err:
-                    try:
-                        self._debug_print(f"Config read warning: {spa_err}")
-                    except Exception:
-                        pass
-
-                username, password, cfg_err = get_spa_credentials(
-                    default_username="DOMAIN\\username",
-                    default_password="password",
-                )
-                if cfg_err:
-                    try:
-                        self._debug_print(f"Config read warning: {cfg_err}")
-                    except Exception:
-                        pass
-
-                def _worker():
-                    # Build URL inside worker (pure string ops, safe).
-                    local_url = (
-                        "http://127.0.0.1:5500/src/assets/response2.html"
-                        if link_up == "LU21"
-                        else "http://127.0.0.1:5500/src/assets/response.html"
-                    )
-                    spa_url = get_url_spa(
-                        link_up=(link_up[-2:] if link_up else ""),
-                        date=date_value,
-                        shift=(
-                            shift_value[-1]
-                            if shift_value and shift_value[-1].isnumeric()
-                            else ""
-                        ),
-                        functional_location=func_location or "PACK",
-                        base_url=getattr(spa_cfg, "base_url", None) or None,
-                    )
-                    url = local_url if env_lower == "development" else spa_url
-
-                    df = fetch_data_from_api(
-                        url,
-                        username,
-                        password,
-                        verify_ssl=getattr(spa_cfg, "verify_ssl", None),
-                        timeout=getattr(spa_cfg, "timeout", None),
-                    )
-
-                    if df is None or getattr(df, "empty", False):
-                        return None, "", [], []
-
-                    df_processed = process_data(df)
-
-                    # Status bar range (best-effort)
-                    rng_str = ""
-                    try:
-                        rng = get_data_range(df_processed)
-                        rng_str = str(rng) if rng is not None else ""
-                    except Exception:
-                        rng_str = ""
-
-                    # Build metrics rows (targets + actuals) in worker.
-                    metrics_rows: list[tuple[str, str, str]] = []
-                    try:
-                        actual_df = get_data_actual(df_processed)
-                        actuals: dict[str, str] = {}
-                        actual_metric_order: list[str] = []
-                        if hasattr(actual_df, "iterrows"):
-                            for _idx, row in actual_df.iterrows():
-                                try:
-                                    metric = str(row.get("Metric", "") or "").strip()
-                                    value = row.get("Value", "")
-                                    if metric:
-                                        if metric not in actual_metric_order:
-                                            actual_metric_order.append(metric)
-                                        actuals[metric] = str(
-                                            value if value is not None else ""
-                                        ).strip()
-                                except Exception:
-                                    pass
-
-                        lu = link_up[-2:].lower() if link_up else ""
-                        fl = func_location[:4].lower() if func_location else ""
-                        filename = f"target_{fl}_{lu}.csv"
-
-                        shift_for_targets = ""
-                        try:
-                            shift_for_targets = shift_value.strip()
-                            if "all" in shift_for_targets.lower():
-                                shift_for_targets = ""
-                        except Exception:
-                            shift_for_targets = ""
-
-                        # Metric list for template creation/order.
-                        metrics_for_template: list[str] = []
-                        for m in list(actual_metric_order) + list(existing_metrics):
-                            m = str(m or "").strip()
-                            if m and m not in metrics_for_template:
-                                metrics_for_template.append(m)
-
-                        _csv_path, targets, _created_template, _err = load_targets_csv(
-                            shift=shift_for_targets,
-                            filename=filename,
-                            folder_name="data_app/targets",
-                            metrics=metrics_for_template,
-                        )
-
-                        metrics_display: list[str] = []
-                        for m in list(actual_metric_order):
-                            m = str(m or "").strip()
-                            if m and m not in metrics_display:
-                                metrics_display.append(m)
-                        if not metrics_display:
-                            for m in list(existing_metrics):
-                                m = str(m or "").strip()
-                                if m and m not in metrics_display:
-                                    metrics_display.append(m)
-
-                        for metric in metrics_display:
-                            target = str((targets or {}).get(metric, "") or "").strip()
-                            actual = str(actuals.get(metric, "") or "").strip()
-                            metrics_rows.append((metric, target, actual))
-                    except Exception:
-                        metrics_rows = []
-
-                    # Build stops rows in worker.
-                    stops_rows: list[list] = []
-                    try:
-                        line_df = get_line_performance_details(df_processed)
-                        if line_df:
-                            first_seg = line_df[0]
-                            if hasattr(first_seg, "values"):
-                                stops_rows = first_seg.values.tolist()
-                    except Exception:
-                        stops_rows = []
-
-                    return df, rng_str, metrics_rows, stops_rows
-
-                df, rng_str, metrics_rows, stops_rows = await asyncio.to_thread(_worker)
+                resp = await facade.get_data(req)
 
                 # Ignore stale completion if user clicked again.
-                if my_seq != int(getattr(self, "_getdata_seq", my_seq) or my_seq):
+                if self._is_stale_seq(my_seq):
                     return
 
-                if df is None:
+                if resp.df is None:
                     try:
                         self._debug_print("No SPA data available.")
                     except Exception:
@@ -626,311 +543,88 @@ class DashboardApp(ft.Container):
                         )
                     return
 
-                # Update cache on success (UI thread)
-                if ttl > 0:
-                    try:
-                        self._spa_cache[cache_key] = (
-                            time.monotonic(),
-                            df,
-                            str(rng_str or ""),
-                            list(metrics_rows or []),
-                            list(stops_rows or []),
-                        )
-                        # Keep cache bounded.
-                        if len(self._spa_cache) > 12:
-                            items = sorted(
-                                self._spa_cache.items(), key=lambda kv: kv[1][0]
-                            )
-                            for k, _v in items[: max(0, len(items) - 12)]:
-                                self._spa_cache.pop(k, None)
-                    except Exception:
-                        pass
-
                 # Apply results to UI (UI thread)
-                try:
-                    self.spa_df = df
-                except Exception:
-                    pass
-
-                try:
-                    self.status_bar.value = str(rng_str or "")
-                except Exception:
-                    pass
-
-                try:
-                    self.metrics_table.set_rows(metrics_rows)
-                except Exception:
-                    pass
-
-                try:
-                    self.stops_table.set_rows(stops_rows)
-                except Exception:
-                    pass
+                self._apply_spa_response(resp, page=page)
 
             except Exception as ex:
-                # Environment-aware error handling
-                env_lower = "production"
-                try:
-                    app_cfg, _app_err = get_application_config()
-                    env_lower = (
-                        str(
-                            getattr(app_cfg, "environment", "production")
-                            or "production"
-                        )
-                        .strip()
-                        .lower()
-                    )
-                except Exception:
-                    env_lower = "production"
+                env_lower = (
+                    str(getattr(self, "_env_lower", "production") or "production")
+                    .strip()
+                    .lower()
+                )
 
-                if env_lower == "production":
-                    try:
-                        log_path = data_app_path(
-                            "error.log", folder_name="data_app/log"
-                        )
-                        tb = ""
-                        try:
-                            tb = traceback.format_exc()
-                        except Exception:
-                            tb = ""
-
-                        def _write_log():
-                            log_path.parent.mkdir(parents=True, exist_ok=True)
-                            with log_path.open("a", encoding="utf-8") as f:
-                                f.write(tb)
-                                f.write("\n\n")
-
-                        await asyncio.to_thread(_write_log)
-                    except Exception:
-                        pass
-                else:
-                    try:
-                        traceback.print_exc()
-                    except Exception:
-                        pass
+                await report_exception(
+                    ex,
+                    where="DashboardApp.update_tables(async)",
+                    env_lower=env_lower,
+                    logger_name="dashboard",
+                    traceback_text=capture_traceback(),
+                )
 
                 if page is not None:
                     snack(page, f"Failed to get SPA data: {ex}", kind="error")
             finally:
-                # Always hide progress bar at the end, and batch update.
-                try:
-                    if getattr(self, "progress_bar", None) is not None:
-                        self.progress_bar.visible = False
-                    if page is not None:
-                        page.update()
-                except Exception:
-                    pass
+                self._set_loading(page, loading=False)
 
         if page is None or not hasattr(page, "run_task"):
             # Fallback to the old blocking behavior if run_task isn't available.
+            self._set_loading(page, loading=True, status="Loading…")
             try:
-                self.get_spa_dataframe()
-                if self.spa_df is not None:
-                    self.update_metrics_tables(self.spa_df, e)
-                    self.update_stops_tables(self.spa_df, e)
-            finally:
+                facade = self._ensure_spa_facade(page)
+
+                if facade is None:
+                    if page is not None:
+                        snack(page, "SPA service is not initialized", kind="error")
+                    return
+
+                req = self._build_spa_request(
+                    link_up=link_up,
+                    date_value=date_value,
+                    shift_value=shift_value,
+                    func_location=func_location,
+                    existing_metrics=existing_metrics,
+                )
+
+                resp = facade.get_data_sync(req)
+
+                if resp.df is None:
+                    if page is not None:
+                        snack(
+                            page, "Failed to get SPA data (empty data)", kind="warning"
+                        )
+                    return
+
+                self._apply_spa_response(resp, page=page)
+            except Exception as ex:
+                env_lower = (
+                    str(getattr(self, "_env_lower", "production") or "production")
+                    .strip()
+                    .lower()
+                )
                 try:
-                    if getattr(self, "progress_bar", None) is not None:
-                        self.progress_bar.visible = False
-                        if page is not None:
-                            page.update()
+                    report_exception_sync(
+                        ex,
+                        where="DashboardApp.update_tables(sync)",
+                        env_lower=env_lower,
+                        logger_name="dashboard",
+                        traceback_text=capture_traceback(),
+                    )
                 except Exception:
-                    pass
+                    # Last resort: avoid crashing the UI on error reporting.
+                    try:
+                        self._logger.exception(
+                            "DashboardApp.update_tables(sync): %s", ex
+                        )
+                    except Exception:
+                        pass
+                if page is not None:
+                    snack(page, f"Failed to get SPA data: {ex}", kind="error")
+            finally:
+                self._set_loading(page, loading=False)
             return
 
         # Flet expects a coroutine *function* here, not a coroutine object.
         page.run_task(_run)
-
-    def update_metrics_tables(self, df, e=None):
-        # Load targets based on selected shift from CSV and update MetricsTable.
-
-        lu = self.sidebar.link_up.value[-2:].lower()  # last 2 chars
-        fl = self.sidebar.func_location.value[:4].lower()  # first 4 chars
-        filename = f"target_{fl}_{lu}.csv"
-
-        shift = None
-
-        try:
-            shift = (
-                self.sidebar.shift.value
-                if "All" not in self.sidebar.shift.value
-                else ""
-            ).strip()
-        except Exception:
-            shift = ""
-
-        # Compute actual metrics first so the table rows can follow get_data_actual() output.
-        actuals: dict[str, str] = {}
-        actual_metric_order: list[str] = []
-        try:
-            df_actual = process_data(df)
-            actual_df = get_data_actual(df_actual)
-
-            # Expected shape: DataFrame with columns Metric, Value
-            if hasattr(actual_df, "iterrows"):
-                for _idx, row in actual_df.iterrows():
-                    try:
-                        metric = str(row.get("Metric", "") or "").strip()
-                        value = row.get("Value", "")
-                        if metric:
-                            if metric not in actual_metric_order:
-                                actual_metric_order.append(metric)
-                            actuals[metric] = str(
-                                value if value is not None else ""
-                            ).strip()
-                    except Exception:
-                        pass
-            elif isinstance(actual_df, dict):
-                # Fallback if service returns dict
-                for k, v in actual_df.items():
-                    try:
-                        metric = str(k).strip()
-                        if metric:
-                            if metric not in actual_metric_order:
-                                actual_metric_order.append(metric)
-                            actuals[metric] = str(v if v is not None else "").strip()
-                    except Exception:
-                        pass
-        except Exception as ex:
-            self._debug_print(f"Failed computing actual metrics: {ex}")
-            actuals = {}
-            actual_metric_order = []
-
-        try:
-            existing_rows = self.metrics_table.get_rows_data()
-            metrics = [m for m, _t, _a in existing_rows if str(m).strip()]
-        except Exception:
-            metrics = []
-
-        # Build metric list for target template creation (preserve order, avoid duplicates)
-        metrics_for_template: list[str] = []
-        for m in list(actual_metric_order) + list(metrics):
-            m = str(m or "").strip()
-            if m and m not in metrics_for_template:
-                metrics_for_template.append(m)
-
-        csv_path, targets, created_template, err = load_targets_csv(
-            shift=shift,
-            filename=filename,
-            folder_name="data_app/targets",
-            metrics=metrics_for_template,
-        )
-        if err:
-            self._debug_print(f"Failed reading targets from CSV: {err}")
-            return
-        if created_template:
-            self._debug_print(
-                f"Target CSV not found; created empty template: {csv_path}"
-            )
-            # Continue updating the UI (targets will be empty)
-
-        if not targets:
-            # No targets is still a valid state; we can still show Actual metrics.
-            self._debug_print(f"No targets loaded from {csv_path.name} for {shift}.")
-
-        # Update rows to follow get_data_actual() output order.
-        try:
-            # Start from actual order, then add any target-only metrics (e.g., legacy metrics like NATR)
-            metrics_display: list[str] = []
-            for m in list(actual_metric_order):
-                m = str(m or "").strip()
-                if m and m not in metrics_display:
-                    metrics_display.append(m)
-
-            for m in list((targets or {}).keys()):
-                m = str(m or "").strip()
-                if m and m not in metrics_display:
-                    metrics_display.append(m)
-
-            # Fall back to existing table metrics if both are empty
-            if not metrics_display:
-                for m in list(metrics):
-                    m = str(m or "").strip()
-                    if m and m not in metrics_display:
-                        metrics_display.append(m)
-
-            new_rows: list[tuple[str, str, str]] = []
-            for metric in metrics_display:
-                target = str((targets or {}).get(metric, "") or "").strip()
-                actual = str(actuals.get(metric, "") or "").strip()
-                new_rows.append((metric, target, actual))
-
-            self.metrics_table.set_rows(new_rows)
-        except Exception as ex:
-            self._debug_print(f"Failed rebuilding MetricsTable rows: {ex}")
-
-        self._debug_print(
-            f"Metrics targets updated for {shift if shift else 'Average of all shifts'} from {csv_path.name}."
-        )
-
-    def update_stops_tables(self, df, e=None):
-        df = process_data(df)
-        line_df = get_line_performance_details(df)
-
-        if not line_df:
-            # nothing to show — clear table and return
-            self.stops_table.set_rows([])
-            self._debug_print("No line performance segments found.")
-            return
-
-        # take first segment and ensure it's a DataFrame
-        first_seg = line_df[0]
-        if hasattr(first_seg, "values"):
-            row_values = first_seg.values.tolist()
-        else:
-            row_values = []
-
-        self.stops_table.set_rows(row_values)
-
-    def get_spa_dataframe(self):
-        app_cfg, app_err = get_application_config()
-        if app_err:
-            self._debug_print(f"Config read warning: {app_err}")
-
-        spa_cfg, spa_err = get_spa_service_config()
-        if spa_err:
-            self._debug_print(f"Config read warning: {spa_err}")
-
-        env = (
-            str(getattr(app_cfg, "environment", "production") or "production")
-            .strip()
-            .lower()
-        )
-
-        # Local test sources (used for development)
-        local_url = (
-            "http://127.0.0.1:5500/src/assets/response2.html"
-            if self.sidebar.link_up.value == "LU21"
-            else "http://127.0.0.1:5500/src/assets/response.html"
-        )
-
-        # Real SPA URL (used for production)
-        spa_url = get_url_spa(
-            link_up=self.sidebar.link_up.value[-2:],
-            date=self.sidebar.date_field.value,
-            shift=self.sidebar.shift.value[-1]
-            if self.sidebar.shift.value[-1].isnumeric()
-            else "",
-            functional_location=self.sidebar.func_location.value[:4].upper() or "PACK",
-            base_url=spa_cfg.base_url or None,
-        )
-
-        url = local_url if env == "development" else spa_url
-
-        username, password, cfg_err = get_spa_credentials(
-            default_username="DOMAIN\\username",
-            default_password="password",
-        )
-        if cfg_err:
-            self._debug_print(f"Config read warning: {cfg_err}")
-
-        self.spa_df = fetch_data_from_api(
-            url,
-            username,
-            password,
-            verify_ssl=getattr(spa_cfg, "verify_ssl", None),
-            timeout=getattr(spa_cfg, "timeout", None),
-        )
 
     def on_stop_row_double(self, row: list):
         """Callback invoked when a stops-table row is double-clicked.

@@ -9,7 +9,7 @@ Struktur proyek mengarah ke aplikasi UI di folder `src/` dengan komponen dan ser
 
 - Menampilkan ringkasan metrik dan tabel data (history/metrics/stops/targets).
 - Manajemen target dari file CSV di `data_app/targets/`.
-- Penyimpanan riwayat di `data_app/history/history.csv`.
+- Penyimpanan riwayat di `data_app/history/history.db` (SQLite).
 - Pengaturan aplikasi via `data_app/settings/config.toml`.
 
 ## Prasyarat
@@ -62,7 +62,8 @@ Pastikan file-file tersebut ada dan terisi sesuai kebutuhan lingkungan Anda.
 
 Data yang dipakai aplikasi:
 
-- `data_app/history/history.csv` — data riwayat.
+- `data_app/history/history.db` — data riwayat (SQLite).
+- `data_app/history/history.csv` — sumber migrasi/backup lama (opsional) dan target export.
 - `data_app/targets/*.csv` — file target (contoh: `target_make_21.csv`, `target_pack_24.csv`).
 
 ### Pengaturan Performa UI
@@ -79,7 +80,7 @@ Perubahan berikut sudah diterapkan untuk meningkatkan responsivitas dan mencegah
 
 - **Dialog lebih stabil**: pembukaan dialog dibuat lebih robust (fallback page resolution + helper pembuka dialog) sehingga tidak “silent fail”.
 - **QR Code lebih responsif**: dialog QR tampil cepat dengan state loading, proses generate dipindah ke background, dan hasilnya di-cache.
-- **History lebih cepat dibuka**: dialog History tampil cepat dengan loading, baca CSV dipindah ke background, plus limit render via `history_max_rows`.
+- **History lebih cepat dibuka**: dialog History tampil cepat dengan loading, baca SQLite dipindah ke background, plus limit render via `history_max_rows`.
 - **Get Data non-blocking**: fetch/parse/proses SPA dipindah ke background sehingga UI tetap responsif.
 - **Anti stale-result**: hasil task lama tidak menimpa hasil terbaru saat user klik Get Data berkali-kali.
 - **Indikator status**: status bar menampilkan `Loading…` saat proses, dan `(...Cached)` saat hasil berasal dari cache.
@@ -143,7 +144,33 @@ Hasil build biasanya ada di folder `dist/` dengan nama `Daily Report.exe`.
 	- Tabel stops
 	- Editor target
 4. Jika perlu memperbarui target, edit file CSV di `data_app/targets/` atau melalui fitur editor target (jika tersedia di UI), lalu refresh tampilan.
-5. Riwayat akan tersimpan/terbaca dari `data_app/history/history.csv`.
+5. Riwayat akan tersimpan/terbaca dari `data_app/history/history.db` (SQLite). CSV dipakai untuk migrasi/import/export.
+
+## Import history.csv ke history.db
+
+Jika Anda punya file `history.csv` (misalnya dari komputer lain) dan ingin menambahkan datanya ke `history.db`, ada 2 cara:
+
+### Opsi A: dari UI (History dialog)
+
+Di dialog **History**, klik tombol **Load from CSV**, pilih file `.csv`, lalu aplikasi akan meng-import ke `history.db` dan me-refresh tabel.
+
+### Opsi B: lewat CLI helper
+
+Jalankan:
+
+```powershell
+uv run python tools\import_history_csv_to_db.py "D:\path\ke\history.csv"
+```
+
+Jika DB tujuan ingin berbeda:
+
+```powershell
+uv run python tools\import_history_csv_to_db.py "D:\path\ke\history.csv" --db "D:\path\ke\history.db"
+```
+
+Catatan:
+- CSV harus punya header.
+- Baris duplikat akan diabaikan (idempotent) berdasarkan kombinasi `(save_id, card_index, detail_index, action_index)`.
 
 ## Struktur Folder Penting
 
@@ -157,7 +184,8 @@ Hasil build biasanya ada di folder `dist/` dengan nama `Daily Report.exe`.
 ## Troubleshooting
 
 - **Aplikasi gagal start / module not found**: pastikan dependencies ter-install (lihat **Instalasi**) dan Anda menjalankan dari folder proyek.
-- **Data tidak muncul**: cek apakah `data_app/history/history.csv` dan file target di `data_app/targets/` tersedia dan format CSV sesuai.
+- **Data tidak muncul**: cek apakah `data_app/history/history.db` ada dan file target di `data_app/targets/` tersedia.
+	Jika Anda masih punya `data_app/history/history.csv` (atau file CSV lain), lakukan import ke DB (lihat bagian **Import history.csv ke history.db**).
 - **Konfigurasi tidak terbaca**: pastikan `data_app/settings/config.toml` ada dan tidak kosong.
 - **Muncul warning GIL dari pandas (Python 3.14 free-threaded)**: warning ini biasanya tidak menghentikan aplikasi. Jika ingin minim warning/lebih stabil, gunakan Python 3.11/3.12 sesuai rekomendasi di **Prasyarat**.
 

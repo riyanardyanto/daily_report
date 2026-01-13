@@ -3,11 +3,19 @@ from __future__ import annotations
 import asyncio
 import csv
 from collections import deque
+from datetime import date as _date
 from pathlib import Path
 
 import flet as ft
 
 from src.services.config_service import get_ui_config
+from src.services.history_db_service import (
+    count_history_rows,
+    export_history_db_to_csv,
+    migrate_history_csv_to_sqlite,
+    read_history_filtered_tail,
+    read_history_tail,
+)
 from src.utils.theme import ON_COLOR, PRIMARY, SECONDARY
 from src.utils.ui_helpers import open_dialog, snack
 
@@ -18,6 +26,7 @@ class HistoryTableDialog:
         *,
         page: ft.Page,
         csv_path: Path,
+        db_path: Path | None = None,
         title: str = "History Table",
         hidden_columns: set[str] | None = None,
         export_default_name: str = "history_export.csv",
@@ -25,9 +34,13 @@ class HistoryTableDialog:
     ):
         self.page = page
         self.csv_path = Path(csv_path)
+        self.db_path = Path(db_path) if db_path is not None else None
         self.title = title
         self.hidden_columns = set(hidden_columns or set())
         self.export_default_name = export_default_name
+
+        # Prefer SQLite when available.
+        self._use_sqlite: bool = bool(self.db_path is not None)
 
         if max_rows is None:
             ui_cfg, _err = get_ui_config()
@@ -47,6 +60,7 @@ class HistoryTableDialog:
         self._filter_tf: ft.TextField | None = None
 
         self._file_picker = ft.FilePicker()
+        self._import_picker = ft.FilePicker()
 
         self._total_rows: int = 0
         self._base_rows_data: list[dict] = []
@@ -79,14 +93,99 @@ class HistoryTableDialog:
         # Used to ignore stale async filter results.
         self._filter_seq: int = 0
 
+        # Export behavior
+        # - view: export only what's currently displayed (fast)
+        # - all: export all rows (or all matches if a filter query exists)
+        self._export_mode: str = "view"
+
+        # Wire file picker callbacks once.
+        self._file_picker.on_result = self._on_export_result
+        self._import_picker.on_result = self._on_import_csv_result
+
+    def _sort_rows(self, rows: list[dict]) -> list[dict]:
+        if not rows:
+            return []
+
+        def _parse_int(v) -> int:
+            try:
+                s = str(v or "").strip()
+                if not s:
+                    return 0
+                return int(float(s))
+            except Exception:
+                return 0
+
+        def _parse_date(v) -> _date:
+            try:
+                s = str(v or "").strip()
+                if not s:
+                    return _date.min
+                return _date.fromisoformat(s)
+            except Exception:
+                return _date.min
+
+        def _shift_key(v) -> tuple[int, str]:
+            s = str(v or "").strip()
+            s_l = s.lower()
+            if not s_l:
+                # Empty shift goes last.
+                return (10000, "")
+            if "all" in s_l and "shift" in s_l:
+                # Keep "All Shifts" after numbered shifts.
+                return (9999, s_l)
+            parts = [p for p in s_l.replace("-", " ").split() if p]
+            for p in parts:
+                try:
+                    # Descending shift number: Shift 3 before Shift 2 before Shift 1
+                    return (-int(p), s_l)
+                except Exception:
+                    continue
+            # Non-numeric shift labels: place after numbered shifts.
+            return (0, s_l)
+
+        def _key(row: dict) -> tuple:
+            r = row or {}
+            d = _parse_date(r.get("date_field", ""))
+            # Sort date descending (newest first). Missing/invalid dates go last.
+            date_key = -int(getattr(d, "toordinal", lambda: 0)() or 0)
+            sh = _shift_key(r.get("shift", ""))
+            saved_at = str(r.get("saved_at", "") or "")
+            save_id = str(r.get("save_id", "") or "")
+            card_i = _parse_int(r.get("card_index", ""))
+            detail_i = _parse_int(r.get("detail_index", ""))
+            action_i = _parse_int(r.get("action_index", ""))
+            return (date_key, sh, saved_at, save_id, card_i, detail_i, action_i)
+
+        try:
+            return sorted(list(rows), key=_key)
+        except Exception:
+            return list(rows)
+
     def show(self):
         page = self.page
         if page is None:
             return
 
-        if not self.csv_path.exists():
-            snack(page, f"History not found: {self.csv_path}", kind="warning")
-            return
+        # If SQLite is configured, best-effort migrate existing CSV once.
+        if self._use_sqlite and self.db_path is not None:
+            try:
+                ok, msg = migrate_history_csv_to_sqlite(
+                    csv_path=self.csv_path,
+                    db_path=self.db_path,
+                )
+                if not ok:
+                    snack(page, msg, kind="warning")
+            except Exception:
+                pass
+
+        if self._use_sqlite and self.db_path is not None:
+            if not self.db_path.exists():
+                snack(page, f"History DB not found: {self.db_path}", kind="warning")
+                return
+        else:
+            if not self.csv_path.exists():
+                snack(page, f"History not found: {self.csv_path}", kind="warning")
+                return
 
         # Open a lightweight dialog immediately (prevents perceived "hang").
         self._title_text = ft.Text(f"{self.title} (loading…)")
@@ -148,11 +247,14 @@ class HistoryTableDialog:
         async def _load_async():
             try:
 
-                def _read_csv():
+                def _read_source():
+                    max_rows = self.max_rows if self.max_rows > 0 else 1000
+                    if self._use_sqlite and self.db_path is not None:
+                        return read_history_tail(db_path=self.db_path, limit=max_rows)
+
                     with self.csv_path.open("r", newline="", encoding="utf-8-sig") as f:
                         reader = csv.DictReader(f)
                         fieldnames = list(reader.fieldnames or [])
-                        max_rows = self.max_rows if self.max_rows > 0 else 1000
                         tail = deque(maxlen=max_rows)
                         total_rows = 0
                         for row in reader:
@@ -161,10 +263,13 @@ class HistoryTableDialog:
                         rows_data = list(tail)
                     return fieldnames, total_rows, rows_data
 
-                fieldnames, total_rows, rows_data = await asyncio.to_thread(_read_csv)
+                fieldnames, total_rows, rows_data = await asyncio.to_thread(
+                    _read_source
+                )
 
                 self._total_rows = int(total_rows)
-                self._base_rows_data = list(rows_data)
+                sorted_rows = self._sort_rows(list(rows_data))
+                self._base_rows_data = list(sorted_rows)
 
                 if not fieldnames:
                     snack(page, "History CSV has no header", kind="warning")
@@ -180,12 +285,10 @@ class HistoryTableDialog:
                     return
 
                 self._fieldnames = visible_fields
-                self._rows_data = list(rows_data)
-                self._filtered_rows_data = list(rows_data)
+                self._rows_data = list(sorted_rows)
+                self._filtered_rows_data = list(sorted_rows)
 
                 self._prev_on_resize = getattr(page, "on_resize", None)
-
-                self._file_picker.on_result = self._on_export_result
 
                 self._filter_tf = ft.TextField(
                     label="Search",
@@ -237,7 +340,15 @@ class HistoryTableDialog:
                         ft.Row(
                             [
                                 self._filter_tf,
-                                ft.Text(str(self.csv_path), size=11, italic=True),
+                                ft.Text(
+                                    str(
+                                        self.db_path
+                                        if self._use_sqlite
+                                        else self.csv_path
+                                    ),
+                                    size=11,
+                                    italic=True,
+                                ),
                             ],
                         ),
                         ft.Container(
@@ -273,21 +384,33 @@ class HistoryTableDialog:
                     self._title_text.value = f"{self.title} (showing {len(self._rows_data)} of {total_rows} rows)"
 
                 if self._dlg is not None:
+                    controls: list[ft.Control] = [
+                        ft.TextButton(
+                            "Close",
+                            on_click=self.close,
+                            style=ft.ButtonStyle(color=SECONDARY),
+                        )
+                    ]
+                    if self._use_sqlite and self.db_path is not None:
+                        controls.append(
+                            ft.ElevatedButton(
+                                "Load from CSV",
+                                on_click=self._on_load_from_csv_click,
+                                color=ON_COLOR,
+                                bgcolor=PRIMARY,
+                            )
+                        )
+                    controls.append(
+                        ft.ElevatedButton(
+                            "Export",
+                            on_click=self._on_export_click,
+                            color=ON_COLOR,
+                            bgcolor=PRIMARY,
+                        )
+                    )
                     self._dlg.actions = [
                         ft.Row(
-                            controls=[
-                                ft.TextButton(
-                                    "Close",
-                                    on_click=self.close,
-                                    style=ft.ButtonStyle(color=SECONDARY),
-                                ),
-                                ft.ElevatedButton(
-                                    "Export",
-                                    on_click=self._on_export_click,
-                                    color=ON_COLOR,
-                                    bgcolor=PRIMARY,
-                                ),
-                            ],
+                            controls=controls,
                             alignment=ft.MainAxisAlignment.END,
                             spacing=8,
                         )
@@ -319,7 +442,7 @@ class HistoryTableDialog:
                     pass
 
             except Exception as ex:
-                snack(page, f"Failed to read history.csv: {ex}", kind="error")
+                snack(page, f"Failed to read history: {ex}", kind="error")
 
         # Run in background if available; otherwise run synchronously (may block).
         try:
@@ -333,22 +456,29 @@ class HistoryTableDialog:
 
         # Fallback: synchronous load
         try:
-            with self.csv_path.open("r", newline="", encoding="utf-8-sig") as f:
-                reader = csv.DictReader(f)
-                fieldnames = list(reader.fieldnames or [])
-                max_rows = self.max_rows if self.max_rows > 0 else 1000
-                tail = deque(maxlen=max_rows)
-                total_rows = 0
-                for row in reader:
-                    total_rows += 1
-                    tail.append(row)
-                rows_data = list(tail)
+            max_rows = self.max_rows if self.max_rows > 0 else 1000
+            if self._use_sqlite and self.db_path is not None:
+                fieldnames, total_rows, rows_data = read_history_tail(
+                    db_path=self.db_path,
+                    limit=max_rows,
+                )
+            else:
+                with self.csv_path.open("r", newline="", encoding="utf-8-sig") as f:
+                    reader = csv.DictReader(f)
+                    fieldnames = list(reader.fieldnames or [])
+                    tail = deque(maxlen=max_rows)
+                    total_rows = 0
+                    for row in reader:
+                        total_rows += 1
+                        tail.append(row)
+                    rows_data = list(tail)
 
             # Re-run the same setup path on the current thread by invoking the async logic body.
             # This keeps behavior consistent for older runtimes.
             # Note: no asyncio loop here; just perform the same steps inline.
             self._total_rows = int(total_rows)
-            self._base_rows_data = list(rows_data)
+            sorted_rows = self._sort_rows(list(rows_data))
+            self._base_rows_data = list(sorted_rows)
 
             if not fieldnames:
                 snack(page, "History CSV has no header", kind="warning")
@@ -360,11 +490,10 @@ class HistoryTableDialog:
                 return
 
             self._fieldnames = visible_fields
-            self._rows_data = list(rows_data)
-            self._filtered_rows_data = list(rows_data)
+            self._rows_data = list(sorted_rows)
+            self._filtered_rows_data = list(sorted_rows)
 
             self._prev_on_resize = getattr(page, "on_resize", None)
-            self._file_picker.on_result = self._on_export_result
 
             self._filter_tf = ft.TextField(
                 label="Search",
@@ -416,7 +545,13 @@ class HistoryTableDialog:
                     ft.Row(
                         [
                             self._filter_tf,
-                            ft.Text(str(self.csv_path), size=11, italic=True),
+                            ft.Text(
+                                str(
+                                    self.db_path if self._use_sqlite else self.csv_path
+                                ),
+                                size=11,
+                                italic=True,
+                            ),
                         ],
                     ),
                     ft.Container(
@@ -450,21 +585,33 @@ class HistoryTableDialog:
                 self._title_text.value = f"{self.title} (showing {len(self._rows_data)} of {total_rows} rows)"
 
             if self._dlg is not None:
+                controls: list[ft.Control] = [
+                    ft.TextButton(
+                        "Close",
+                        on_click=self.close,
+                        style=ft.ButtonStyle(color=SECONDARY),
+                    )
+                ]
+                if self._use_sqlite and self.db_path is not None:
+                    controls.append(
+                        ft.ElevatedButton(
+                            "Load from CSV",
+                            on_click=self._on_load_from_csv_click,
+                            color=ON_COLOR,
+                            bgcolor=PRIMARY,
+                        )
+                    )
+                controls.append(
+                    ft.ElevatedButton(
+                        "Export",
+                        on_click=self._on_export_click,
+                        color=ON_COLOR,
+                        bgcolor=PRIMARY,
+                    )
+                )
                 self._dlg.actions = [
                     ft.Row(
-                        controls=[
-                            ft.TextButton(
-                                "Close",
-                                on_click=self.close,
-                                style=ft.ButtonStyle(color=SECONDARY),
-                            ),
-                            ft.ElevatedButton(
-                                "Export",
-                                on_click=self._on_export_click,
-                                color=ON_COLOR,
-                                bgcolor=PRIMARY,
-                            ),
-                        ],
+                        controls=controls,
                         alignment=ft.MainAxisAlignment.END,
                         spacing=8,
                     )
@@ -491,13 +638,23 @@ class HistoryTableDialog:
                 pass
             page.update()
         except Exception as ex:
-            snack(page, f"Failed to read history.csv: {ex}", kind="error")
+            snack(page, f"Failed to read history: {ex}", kind="error")
 
     def _read_filtered_rows(self, q: str) -> tuple[int, list[dict]]:
         """Stream-read the full CSV and return (matches_total, last_matches)."""
         q = str(q or "").strip()
         if not q:
             return 0, []
+
+        if self._use_sqlite and self.db_path is not None:
+            fields = list(self._fieldnames or [])
+            max_rows = self.max_rows if self.max_rows > 0 else 1000
+            return read_history_filtered_tail(
+                db_path=self.db_path,
+                q=q,
+                fieldnames=fields,
+                limit=max_rows,
+            )
 
         max_rows = self.max_rows if self.max_rows > 0 else 1000
         tail = deque(maxlen=max_rows)
@@ -519,6 +676,15 @@ class HistoryTableDialog:
         q = str(q or "").strip()
         if not q:
             return 0, []
+
+        if self._use_sqlite and self.db_path is not None:
+            max_rows = self.max_rows if self.max_rows > 0 else 1000
+            return read_history_filtered_tail(
+                db_path=self.db_path,
+                q=q,
+                fieldnames=list(fieldnames or []),
+                limit=max_rows,
+            )
 
         max_rows = self.max_rows if self.max_rows > 0 else 1000
         tail = deque(maxlen=max_rows)
@@ -566,12 +732,305 @@ class HistoryTableDialog:
                 return
             if self._file_picker not in overlay:
                 overlay.append(self._file_picker)
+            if self._import_picker not in overlay:
+                overlay.append(self._import_picker)
                 page.update()
         except Exception:
             pass
 
-    def _on_export_click(self, _e=None):
+    def _on_load_from_csv_click(self, _e=None):
+        page = self.page
         self._ensure_file_picker_added()
+
+        if not (self._use_sqlite and self.db_path is not None):
+            snack(page, "SQLite history is not enabled", kind="warning")
+            return
+
+        try:
+            self._import_picker.pick_files(
+                dialog_title="Select history CSV to import",
+                allow_multiple=False,
+                allowed_extensions=["csv"],
+            )
+        except Exception as ex:
+            snack(page, f"Failed to open file dialog: {ex}", kind="error")
+
+    def _on_import_csv_result(self, ev: ft.FilePickerResultEvent):
+        page = self.page
+        if page is None:
+            return
+
+        if not (self._use_sqlite and self.db_path is not None):
+            return
+
+        try:
+            files = getattr(ev, "files", None)
+        except Exception:
+            files = None
+
+        csv_path = None
+        try:
+            if files and len(files) > 0:
+                csv_path = getattr(files[0], "path", None)
+        except Exception:
+            csv_path = None
+
+        p = str(csv_path or "").strip()
+        if not p:
+            return
+
+        try:
+            snack(page, "Importing CSV…", kind="warning")
+        except Exception:
+            pass
+
+        async def _import_async():
+            try:
+
+                def _worker_import_and_reload():
+                    before = count_history_rows(self.db_path)
+                    ok, msg = migrate_history_csv_to_sqlite(
+                        csv_path=Path(p),
+                        db_path=self.db_path,
+                    )
+                    after = count_history_rows(self.db_path)
+
+                    # Reload tail view after import
+                    max_rows = self.max_rows if self.max_rows > 0 else 1000
+                    fieldnames, total_rows, rows_data = read_history_tail(
+                        db_path=self.db_path,
+                        limit=max_rows,
+                    )
+                    return ok, msg, before, after, fieldnames, total_rows, rows_data
+
+                (
+                    ok,
+                    msg,
+                    before,
+                    after,
+                    fieldnames,
+                    total_rows,
+                    rows_data,
+                ) = await asyncio.to_thread(_worker_import_and_reload)
+
+                # Update state on UI thread
+                self._total_rows = int(total_rows)
+                sorted_rows = self._sort_rows(list(rows_data))
+                self._base_rows_data = list(sorted_rows)
+                self._rows_data = list(sorted_rows)
+                self._filtered_rows_data = list(sorted_rows)
+
+                visible_fields = [
+                    c for c in (fieldnames or []) if c not in self.hidden_columns
+                ]
+                if visible_fields:
+                    self._fieldnames = list(visible_fields)
+
+                try:
+                    if self._filter_tf is not None:
+                        self._filter_tf.value = ""
+                        self._filter_tf.disabled = False
+                        self._filter_tf.update()
+                except Exception:
+                    pass
+
+                if self._title_text is not None:
+                    self._title_text.value = f"{self.title} (showing {len(self._rows_data)} of {self._total_rows} rows)"
+
+                if self._dt is not None:
+                    # Rebuild columns if needed, otherwise just refresh rows.
+                    if len(self._dt.columns or []) != len(self._fieldnames):
+                        self._dt.columns = [
+                            ft.DataColumn(
+                                ft.Container(
+                                    content=ft.Text(
+                                        (
+                                            {
+                                                "link_up": "lu",
+                                                "func_location": "fl",
+                                                "date_field": "date",
+                                                "shift": "shift",
+                                            }.get(name, name)
+                                        ).upper(),
+                                        size=11,
+                                        weight=ft.FontWeight.W_600,
+                                    ),
+                                    width=self._get_column_width(name),
+                                )
+                            )
+                            for name in self._fieldnames
+                        ]
+
+                    widths = self._get_column_widths_snapshot()
+                    self._dt.rows = self._build_rows(self._filtered_rows_data, widths)
+                    try:
+                        self._dt.update()
+                    except Exception:
+                        pass
+
+                self._apply_responsive_size()
+                self._apply_column_widths()
+
+                delta = int(after) - int(before)
+                if ok:
+                    snack(
+                        page,
+                        f"Imported: {Path(p).name} (+{max(0, delta)} new rows).",
+                        kind="success",
+                    )
+                else:
+                    snack(page, str(msg or "Import failed"), kind="warning")
+
+                try:
+                    page.update()
+                except Exception:
+                    pass
+            except Exception as ex:
+                snack(page, f"Import failed: {ex}", kind="error")
+
+        runner = getattr(page, "run_task", None)
+        if callable(runner):
+            runner(_import_async)
+        else:
+            # Blocking fallback
+            try:
+                before = count_history_rows(self.db_path)
+                ok, msg = migrate_history_csv_to_sqlite(
+                    csv_path=Path(p),
+                    db_path=self.db_path,
+                )
+                after = count_history_rows(self.db_path)
+                max_rows = self.max_rows if self.max_rows > 0 else 1000
+                fieldnames, total_rows, rows_data = read_history_tail(
+                    db_path=self.db_path,
+                    limit=max_rows,
+                )
+
+                self._total_rows = int(total_rows)
+                sorted_rows = self._sort_rows(list(rows_data))
+                self._base_rows_data = list(sorted_rows)
+                self._rows_data = list(sorted_rows)
+                self._filtered_rows_data = list(sorted_rows)
+                visible_fields = [
+                    c for c in (fieldnames or []) if c not in self.hidden_columns
+                ]
+                if visible_fields:
+                    self._fieldnames = list(visible_fields)
+                if self._filter_tf is not None:
+                    self._filter_tf.value = ""
+                if self._dt is not None:
+                    widths = self._get_column_widths_snapshot()
+                    self._dt.rows = self._build_rows(self._filtered_rows_data, widths)
+                    self._dt.update()
+
+                delta = int(after) - int(before)
+                if ok:
+                    snack(
+                        page,
+                        f"Imported: {Path(p).name} (+{max(0, delta)} new rows).",
+                        kind="success",
+                    )
+                else:
+                    snack(page, str(msg or "Import failed"), kind="warning")
+            except Exception as ex:
+                snack(page, f"Import failed: {ex}", kind="error")
+
+    def _on_export_click(self, _e=None):
+        page = self.page
+        self._ensure_file_picker_added()
+
+        # For SQLite, let the user choose export scope.
+        if self._use_sqlite and self.db_path is not None:
+
+            def _close_choice(_e=None):
+                try:
+                    if dlg is not None:
+                        dlg.open = False
+                    page.update()
+                except Exception:
+                    pass
+
+            def _pick(mode: str):
+                try:
+                    self._export_mode = str(mode or "view")
+                except Exception:
+                    self._export_mode = "view"
+                try:
+                    _close_choice()
+                finally:
+                    try:
+                        self._file_picker.save_file(
+                            dialog_title="Export history CSV",
+                            file_name=self.export_default_name,
+                            allowed_extensions=["csv"],
+                        )
+                        self.close()
+                    except Exception as ex:
+                        snack(
+                            self.page, f"Failed to open file dialog: {ex}", kind="error"
+                        )
+
+            dlg = ft.AlertDialog(
+                modal=True,
+                title=ft.Text("Export"),
+                content=ft.Container(
+                    content=ft.Column(
+                        controls=[
+                            ft.Text(
+                                "Choose what to export:",
+                                size=12,
+                            ),
+                            ft.Text(
+                                "- Current view exports only the rows shown (fast).\n"
+                                "- All rows exports from SQLite (may take longer).",
+                                size=11,
+                                italic=True,
+                            ),
+                        ],
+                        spacing=10,
+                    ),
+                    padding=ft.padding.all(12),
+                    bgcolor=ft.Colors.WHITE,
+                    border=ft.border.all(1, ft.Colors.BLACK12),
+                    border_radius=10,
+                ),
+                actions=[
+                    ft.Row(
+                        controls=[
+                            ft.TextButton(
+                                "Cancel",
+                                on_click=_close_choice,
+                                style=ft.ButtonStyle(color=SECONDARY),
+                            ),
+                            ft.ElevatedButton(
+                                "Current view",
+                                on_click=lambda _e: _pick("view"),
+                                color=ON_COLOR,
+                                bgcolor=PRIMARY,
+                            ),
+                            ft.ElevatedButton(
+                                "All rows",
+                                on_click=lambda _e: _pick("all"),
+                                color=ON_COLOR,
+                                bgcolor=PRIMARY,
+                            ),
+                        ],
+                        alignment=ft.MainAxisAlignment.END,
+                        spacing=8,
+                    )
+                ],
+                actions_alignment=ft.MainAxisAlignment.END,
+                on_dismiss=_close_choice,
+            )
+
+            open_dialog(page, dlg)
+            return
+
+        # CSV mode: keep current behavior (exports current view snapshot).
+        try:
+            self._export_mode = "view"
+        except Exception:
+            pass
         try:
             self._file_picker.save_file(
                 dialog_title="Export history CSV",
@@ -601,6 +1060,14 @@ class HistoryTableDialog:
             fieldnames = list(self._fieldnames or [])
             rows_data = list(self._filtered_rows_data or [])
 
+            export_mode = str(getattr(self, "_export_mode", "view") or "view").strip()
+            use_sqlite = bool(self._use_sqlite and self.db_path is not None)
+            q_snapshot = ""
+            try:
+                q_snapshot = str(getattr(self._filter_tf, "value", "") or "").strip()
+            except Exception:
+                q_snapshot = ""
+
             try:
                 snack(page, "Exporting…", kind="warning")
             except Exception:
@@ -610,6 +1077,21 @@ class HistoryTableDialog:
                 try:
 
                     def _worker_write():
+                        # If using SQLite and user asked for full export, stream from DB.
+                        if (
+                            use_sqlite
+                            and export_mode == "all"
+                            and self.db_path is not None
+                        ):
+                            exported, matches_total = export_history_db_to_csv(
+                                db_path=self.db_path,
+                                export_path=Path(p),
+                                visible_fieldnames=fieldnames,
+                                q=q_snapshot,
+                            )
+                            return exported, matches_total
+
+                        # Default: export current view snapshot.
                         with open(p, "w", newline="", encoding="utf-8-sig") as f:
                             writer = csv.DictWriter(f, fieldnames=fieldnames)
                             writer.writeheader()
@@ -619,9 +1101,18 @@ class HistoryTableDialog:
                                     for c in fieldnames
                                 }
                                 writer.writerow(out)
+                        return len(rows_data), len(rows_data)
 
-                    await asyncio.to_thread(_worker_write)
-                    snack(page, f"Export successful: {p}", kind="success")
+                    exported, matches_total = await asyncio.to_thread(_worker_write)
+
+                    if use_sqlite and export_mode == "all":
+                        snack(
+                            page,
+                            f"Export successful: {p} ({exported} of {matches_total} rows)",
+                            kind="success",
+                        )
+                    else:
+                        snack(page, f"Export successful: {p}", kind="success")
                 except Exception as ex:
                     snack(page, f"Failed to export CSV: {ex}", kind="error")
 
@@ -630,15 +1121,29 @@ class HistoryTableDialog:
                 runner(_export_async)
             else:
                 # Fallback: blocking export
-                with open(p, "w", newline="", encoding="utf-8-sig") as f:
-                    writer = csv.DictWriter(f, fieldnames=fieldnames)
-                    writer.writeheader()
-                    for row_obj in rows_data:
-                        out = {
-                            c: str((row_obj or {}).get(c, "") or "") for c in fieldnames
-                        }
-                        writer.writerow(out)
-                snack(page, f"Export successful: {p}", kind="success")
+                if use_sqlite and export_mode == "all" and self.db_path is not None:
+                    exported, matches_total = export_history_db_to_csv(
+                        db_path=self.db_path,
+                        export_path=Path(p),
+                        visible_fieldnames=fieldnames,
+                        q=q_snapshot,
+                    )
+                    snack(
+                        page,
+                        f"Export successful: {p} ({exported} of {matches_total} rows)",
+                        kind="success",
+                    )
+                else:
+                    with open(p, "w", newline="", encoding="utf-8-sig") as f:
+                        writer = csv.DictWriter(f, fieldnames=fieldnames)
+                        writer.writeheader()
+                        for row_obj in rows_data:
+                            out = {
+                                c: str((row_obj or {}).get(c, "") or "")
+                                for c in fieldnames
+                            }
+                            writer.writerow(out)
+                    snack(page, f"Export successful: {p}", kind="success")
         except Exception as ex:
             snack(page, f"Failed to export CSV: {ex}", kind="error")
 
@@ -744,7 +1249,7 @@ class HistoryTableDialog:
                     if seq != self._filter_seq:
                         return
 
-                    self._filtered_rows_data = list(matches_tail)
+                    self._filtered_rows_data = self._sort_rows(list(matches_tail))
 
                     if self._title_text is not None:
                         self._title_text.value = f"{self.title} (showing {len(self._filtered_rows_data)} of {matches_total} matches)"
@@ -802,7 +1307,7 @@ class HistoryTableDialog:
             matches_total, matches_tail = self._read_filtered_rows(q_snapshot)
             if seq != self._filter_seq:
                 return
-            self._filtered_rows_data = list(matches_tail)
+            self._filtered_rows_data = self._sort_rows(list(matches_tail))
             if self._title_text is not None:
                 self._title_text.value = f"{self.title} (showing {len(self._filtered_rows_data)} of {matches_total} matches)"
             if self._dt is not None:

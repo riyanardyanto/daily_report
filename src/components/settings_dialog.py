@@ -119,7 +119,7 @@ class SettingsDialog:
 
         save_btn = ft.ElevatedButton(
             "Save",
-            on_click=lambda _e: None,
+            on_click=None,
             color=ON_COLOR,
             bgcolor=PRIMARY,
             disabled=True,
@@ -219,6 +219,12 @@ class SettingsDialog:
                     pass
                 snack(page, "Settings saved", kind="success")
                 _close()
+
+        # Wire the handler after definition so Save actually works.
+        try:
+            save_btn.on_click = _on_save
+        except Exception:
+            pass
 
         self._dlg = ft.AlertDialog(
             modal=True,

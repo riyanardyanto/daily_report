@@ -1,10 +1,11 @@
 from __future__ import annotations
 
-import sys
-from pathlib import Path
+import asyncio
 from typing import Any
 
 import flet as ft
+
+from src.utils.file_lock import is_file_locked_windows
 
 
 def resolve_page(e: Any | None = None, fallback: Any | None = None) -> Any | None:
@@ -57,27 +58,84 @@ def open_dialog(page: Any, dlg: ft.AlertDialog) -> bool:
     if page is None or dlg is None:
         return False
 
-    # Close existing dialog if present to reduce "sometimes doesn't show" cases.
-    try:
-        existing = getattr(page, "dialog", None)
-        if existing is not None and getattr(existing, "open", False):
-            existing.open = False
-            try:
-                page.update()
-            except Exception:
-                pass
-    except Exception:
-        pass
+    def _mount_dialog_on_page() -> None:
+        # Prefer mounting on overlay to ensure the control gets a UID.
+        try:
+            overlay = getattr(page, "overlay", None)
+            if isinstance(overlay, list) and dlg not in overlay:
+                overlay.append(dlg)
+        except Exception:
+            pass
 
-    try:
-        page.open(dlg)
-        return True
-    except Exception as ex_open:
-        # Fall back to the older API style.
+        # Keep compatibility with older patterns.
         try:
             page.dialog = dlg
+        except Exception:
+            pass
+
+    def _close_existing_dialogs() -> None:
+        # Best-effort: close current dialog + any open AlertDialog in overlay.
+        try:
+            existing = getattr(page, "dialog", None)
+            if (
+                existing is not None
+                and existing is not dlg
+                and getattr(existing, "open", False)
+            ):
+                existing.open = False
+        except Exception:
+            pass
+
+        try:
+            overlay = getattr(page, "overlay", None)
+            if isinstance(overlay, list):
+                for c in list(overlay):
+                    if c is None or c is dlg:
+                        continue
+                    try:
+                        if isinstance(c, ft.AlertDialog) and getattr(c, "open", False):
+                            c.open = False
+                    except Exception:
+                        pass
+        except Exception:
+            pass
+
+    def _try_open_now() -> None:
+        _close_existing_dialogs()
+        _mount_dialog_on_page()
+        try:
             dlg.open = True
-            page.update()
+        except Exception:
+            pass
+
+        # Update page (not dlg) so Flet can assign UIDs.
+        page.update()
+
+    try:
+        _try_open_now()
+        return True
+    except Exception as ex_open:
+        # Flet can throw AssertionError when a control has not been mounted yet
+        # (e.g., called during early startup). Do a one-shot retry on the next loop tick.
+        try:
+            run_task = getattr(page, "run_task", None)
+            if callable(run_task):
+
+                async def _retry_once():
+                    try:
+                        await asyncio.sleep(0)
+                        _try_open_now()
+                    except Exception:
+                        pass
+
+                run_task(_retry_once())
+                return True
+        except Exception:
+            pass
+
+        # Last resort: try the native API.
+        try:
+            page.open(dlg)
             return True
         except Exception as ex_fallback:
             msg = (
@@ -170,60 +228,9 @@ def snack(page: Any, message: str, kind: str | None = None) -> None:
         pass
 
 
-def is_file_locked_windows(path: str | Path) -> bool:
-    """Return True if the file is locked by another process (Windows only, best-effort).
-
-    Detects classic Excel locks by attempting to open the file with share mode = 0.
-    On non-Windows platforms this returns False.
-    """
-    try:
-        if sys.platform != "win32":
-            return False
-
-        p = Path(path)
-        if not p.exists():
-            return False
-
-        import ctypes
-
-        GENERIC_READ = 0x80000000
-        FILE_SHARE_NONE = 0
-        OPEN_EXISTING = 3
-        FILE_ATTRIBUTE_NORMAL = 0x80
-        INVALID_HANDLE_VALUE = ctypes.c_void_p(-1).value
-
-        CreateFileW = ctypes.windll.kernel32.CreateFileW
-        CreateFileW.argtypes = [
-            ctypes.c_wchar_p,
-            ctypes.c_uint32,
-            ctypes.c_uint32,
-            ctypes.c_void_p,
-            ctypes.c_uint32,
-            ctypes.c_uint32,
-            ctypes.c_void_p,
-        ]
-        CreateFileW.restype = ctypes.c_void_p
-
-        handle = CreateFileW(
-            str(p),
-            GENERIC_READ,
-            FILE_SHARE_NONE,
-            None,
-            OPEN_EXISTING,
-            FILE_ATTRIBUTE_NORMAL,
-            None,
-        )
-
-        if handle == INVALID_HANDLE_VALUE or handle is None:
-            err = ctypes.windll.kernel32.GetLastError()
-            # 32=sharing violation, 33=lock violation
-            return err in (32, 33)
-
-        try:
-            ctypes.windll.kernel32.CloseHandle(handle)
-        except Exception:
-            pass
-
-        return False
-    except Exception:
-        return False
+__all__ = [
+    "resolve_page",
+    "open_dialog",
+    "snack",
+    "is_file_locked_windows",
+]

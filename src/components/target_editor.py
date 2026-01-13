@@ -5,9 +5,10 @@ import csv
 
 import flet as ft
 
+from src.utils.file_lock import is_file_locked_windows
 from src.utils.helpers import data_app_path, load_targets_csv
 from src.utils.theme import ON_COLOR, PRIMARY, SECONDARY
-from src.utils.ui_helpers import is_file_locked_windows, open_dialog, snack
+from src.utils.ui_helpers import open_dialog, snack
 
 
 class TargetEditorDialog:

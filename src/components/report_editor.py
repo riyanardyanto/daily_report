@@ -6,7 +6,10 @@ from src.components.history_table import HistoryTableDialog
 from src.components.qr_code_dialog import QrCodeDialog
 from src.components.report_list_view import ReportList
 from src.components.target_editor import TargetEditorDialog
-from src.services.history_service import save_report_history_csv
+from src.services.history_db_service import (
+    migrate_history_csv_to_sqlite,
+    save_report_history_sqlite,
+)
 from src.utils.helpers import data_app_path, load_settings_options
 from src.utils.theme import DANGER, INFO, ON_COLOR, PRIMARY, SECONDARY, SUCCESS, WARNING
 from src.utils.ui_helpers import open_dialog, resolve_page, snack
@@ -131,9 +134,11 @@ class ReportEditor(ft.Container):
             return
 
         csv_path = data_app_path("history.csv", folder_name="data_app/history")
+        db_path = data_app_path("history.db", folder_name="data_app/history")
         HistoryTableDialog(
             page=page,
             csv_path=csv_path,
+            db_path=db_path,
             hidden_columns={
                 "save_id",
                 "saved_at",
@@ -217,6 +222,7 @@ class ReportEditor(ft.Container):
                 user = str(selected_user or "").strip()
 
                 csv_path = data_app_path("history.csv", folder_name="data_app/history")
+                db_path = data_app_path("history.db", folder_name="data_app/history")
 
                 snack(page, "Saving…", kind="warning")
 
@@ -224,8 +230,14 @@ class ReportEditor(ft.Container):
                     try:
 
                         def _worker():
-                            return save_report_history_csv(
+                            # One-time migration (best-effort) so users keep their existing history.
+                            migrate_history_csv_to_sqlite(
                                 csv_path=csv_path,
+                                db_path=db_path,
+                            )
+
+                            return save_report_history_sqlite(
+                                db_path=db_path,
                                 cards=cards,
                                 extract_issue=self.report_list._extract_issue_text,
                                 extract_details=self.report_list._extract_details,
@@ -253,8 +265,12 @@ class ReportEditor(ft.Container):
                     runner(_run_save)
                 else:
                     # Fallback (blocking) if run_task isn't available
-                    ok, msg = save_report_history_csv(
+                    migrate_history_csv_to_sqlite(
                         csv_path=csv_path,
+                        db_path=db_path,
+                    )
+                    ok, msg = save_report_history_sqlite(
+                        db_path=db_path,
                         cards=cards,
                         extract_issue=self.report_list._extract_issue_text,
                         extract_details=self.report_list._extract_details,
