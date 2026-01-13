@@ -4,17 +4,17 @@ import argparse
 import sys
 from pathlib import Path
 
-PROJECT_ROOT = Path(__file__).resolve().parents[1]
-if str(PROJECT_ROOT) not in sys.path:
-    sys.path.insert(0, str(PROJECT_ROOT))
-
-from src.services.history_db_service import (
-    count_history_rows,
-    migrate_history_csv_to_sqlite,
-)
-
 
 def main() -> int:
+    project_root = Path(__file__).resolve().parents[1]
+    if str(project_root) not in sys.path:
+        sys.path.insert(0, str(project_root))
+
+    from src.services.history_db_service import (
+        count_history_rows,
+        migrate_history_csv_to_sqlite,
+    )
+
     parser = argparse.ArgumentParser(
         description="Import history.csv rows into history.db (SQLite). Duplicates are ignored."
     )
@@ -25,7 +25,7 @@ def main() -> int:
     parser.add_argument(
         "--db",
         dest="db_path",
-        default=str(PROJECT_ROOT / "data_app" / "history" / "history.db"),
+        default=str(project_root / "data_app" / "history" / "history.db"),
         help="Path to the destination SQLite DB (default: data_app/history/history.db)",
     )
 

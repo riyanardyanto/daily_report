@@ -250,6 +250,19 @@ class TargetEditorDialog:
             except Exception:
                 pass
 
+            # Excel often includes a header row like: "Shift 1\tShift 2\tShift 3".
+            # If present, drop it so the rest can be parsed.
+            try:
+                if matrix:
+                    first = [str(c or "").strip() for c in matrix[0]]
+                    first_l = [c.lower() for c in first if c]
+                    if any(c.startswith("shift") for c in first_l) and not (
+                        first and first[0].lower() in ("metrics", "metric")
+                    ):
+                        matrix = matrix[1:]
+            except Exception:
+                pass
+
             # Decide selected shift (used for 1-col pastes)
             paste_shift = selected_shift
             if paste_shift not in shift_cols:
@@ -314,6 +327,23 @@ class TargetEditorDialog:
                 snack(page, f"Paste successful ({updated} cell)", kind="success")
                 return
 
+            # Case C: user copied a transposed range (3 rows = shifts, columns = metrics).
+            # Example: 3xN where N == len(metrics_order)
+            if height >= 3 and width == len(metrics_order) and len(shift_cols) >= 3:
+                for row_idx, sc in enumerate(shift_cols[:3]):
+                    if row_idx >= len(matrix):
+                        break
+                    r = matrix[row_idx]
+                    for col_idx, metric in enumerate(metrics_order):
+                        if col_idx < len(r):
+                            _set(metric, sc, str(r[col_idx] or "").strip())
+                try:
+                    dt.update()
+                except Exception:
+                    pass
+                snack(page, f"Paste successful ({updated} cell)", kind="success")
+                return
+
             if height == len(metrics_order) and width == 1:
                 for row_idx, metric in enumerate(metrics_order):
                     r = matrix[row_idx]
@@ -327,7 +357,9 @@ class TargetEditorDialog:
 
             snack(
                 page,
-                "Paste format not recognized. Copy from Excel as: (Metrics + values) or a value matrix.",
+                f"Paste format not recognized.\n"
+                f"Tip: copy from Excel as: (Metrics + values) or a value matrix.\n"
+                f"Detected size: {height}x{width}",
                 kind="warning",
             )
 
@@ -349,34 +381,58 @@ class TargetEditorDialog:
             if dt is None:
                 return
 
-            async def _paste_async():
+            def _set_busy(visible: bool, message: str | None = None):
                 try:
-                    clip = ""
+                    if message is not None:
+                        loading_text.value = message
+                    loading_overlay.visible = visible
+                    loading_text.update()
+                    loading_overlay.update()
+                except Exception:
                     try:
-                        clip = await page.get_clipboard()
+                        page.update()
                     except Exception:
-                        try:
-                            clip = page.get_clipboard()
-                        except Exception:
-                            clip = ""
-                    matrix = _parse_excel_clipboard(clip)
-                    _apply_matrix(matrix)
-                except Exception as ex:
-                    snack(page, f"Paste failed: {ex}", kind="error")
+                        pass
 
             try:
-                runner = getattr(page, "run_task", None)
-                if callable(runner):
-                    runner(_paste_async)
-                    return
-            except Exception:
-                pass
+                try:
+                    paste_btn.disabled = True
+                    paste_btn.update()
+                except Exception:
+                    pass
 
-            try:
-                clip = page.get_clipboard()
-            except Exception:
+                _set_busy(True, "Reading clipboard…")
+
                 clip = ""
-            _apply_matrix(_parse_excel_clipboard(clip))
+                try:
+                    # Flet Page.get_clipboard() is synchronous and may block up to wait_timeout.
+                    # Keep it short so the UI doesn't feel stuck.
+                    clip = page.get_clipboard(wait_timeout=0.5) or ""
+                except TypeError:
+                    # Older/newer Flet variants might not support wait_timeout.
+                    clip = page.get_clipboard() or ""
+                except Exception:
+                    clip = ""
+
+                clip = str(clip or "")
+                if not clip.strip():
+                    snack(
+                        page,
+                        "Clipboard kosong / belum bisa dibaca.\nCopy dari Excel dulu, lalu kembali ke aplikasi dan klik Paste lagi.",
+                        kind="warning",
+                    )
+                    return
+
+                _apply_matrix(_parse_excel_clipboard(clip))
+            except Exception as ex:
+                snack(page, f"Paste failed: {ex}", kind="error")
+            finally:
+                try:
+                    paste_btn.disabled = False
+                    paste_btn.update()
+                except Exception:
+                    pass
+                _set_busy(False, "Loading targets…")
 
         def _on_save(_e=None):
             if dt is None:
