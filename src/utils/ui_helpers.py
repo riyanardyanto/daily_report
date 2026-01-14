@@ -103,12 +103,23 @@ def open_dialog(page: Any, dlg: ft.AlertDialog) -> bool:
     def _try_open_now() -> None:
         _close_existing_dialogs()
         _mount_dialog_on_page()
+
+        # Prefer the native API: it updates just the dialog, not the whole page.
+        try:
+            opener = getattr(page, "open", None)
+            if callable(opener):
+                opener(dlg)
+                return
+        except Exception:
+            pass
+
+        # Fallback to the older pattern.
         try:
             dlg.open = True
         except Exception:
             pass
 
-        # Update page (not dlg) so Flet can assign UIDs.
+        # As a last step, update the page so Flet can assign UIDs.
         page.update()
 
     try:
@@ -128,13 +139,15 @@ def open_dialog(page: Any, dlg: ft.AlertDialog) -> bool:
                     except Exception:
                         pass
 
-                run_task(_retry_once())
+                # IMPORTANT: pass coroutine function (not coroutine object)
+                run_task(_retry_once)
                 return True
         except Exception:
             pass
 
-        # Last resort: try the native API.
+        # Last resort: try the native API (ensure mounted first).
         try:
+            _mount_dialog_on_page()
             page.open(dlg)
             return True
         except Exception as ex_fallback:

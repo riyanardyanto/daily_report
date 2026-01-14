@@ -14,6 +14,7 @@ from src.services.history_db_service import (
     export_history_db_to_csv,
     migrate_history_csv_to_sqlite,
     read_history_filtered_tail,
+    read_history_filtered_tail_no_count,
     read_history_tail,
 )
 from src.utils.theme import ON_COLOR, PRIMARY, SECONDARY
@@ -31,6 +32,7 @@ class HistoryTableDialog:
         hidden_columns: set[str] | None = None,
         export_default_name: str = "history_export.csv",
         max_rows: int | None = None,
+        filter_no_count: bool | None = None,
     ):
         self.page = page
         self.csv_path = Path(csv_path)
@@ -42,9 +44,16 @@ class HistoryTableDialog:
         # Prefer SQLite when available.
         self._use_sqlite: bool = bool(self.db_path is not None)
 
+        ui_cfg, _err = get_ui_config()
         if max_rows is None:
-            ui_cfg, _err = get_ui_config()
             max_rows = getattr(ui_cfg, "history_max_rows", 500)
+
+        if filter_no_count is None:
+            filter_no_count = getattr(ui_cfg, "history_filter_no_count", None)
+        if filter_no_count is None:
+            filter_no_count = self._use_sqlite
+
+        self._filter_no_count: bool = bool(filter_no_count)
 
         self.max_rows = int(max_rows or 0) if max_rows is not None else 500
 
@@ -166,18 +175,6 @@ class HistoryTableDialog:
         if page is None:
             return
 
-        # If SQLite is configured, best-effort migrate existing CSV once.
-        if self._use_sqlite and self.db_path is not None:
-            try:
-                ok, msg = migrate_history_csv_to_sqlite(
-                    csv_path=self.csv_path,
-                    db_path=self.db_path,
-                )
-                if not ok:
-                    snack(page, msg, kind="warning")
-            except Exception:
-                pass
-
         if self._use_sqlite and self.db_path is not None:
             if not self.db_path.exists():
                 snack(page, f"History DB not found: {self.db_path}", kind="warning")
@@ -268,7 +265,10 @@ class HistoryTableDialog:
                 )
 
                 self._total_rows = int(total_rows)
-                sorted_rows = self._sort_rows(list(rows_data))
+                if self._use_sqlite and self.db_path is not None:
+                    sorted_rows = list(rows_data)
+                else:
+                    sorted_rows = self._sort_rows(list(rows_data))
                 self._base_rows_data = list(sorted_rows)
 
                 if not fieldnames:
@@ -640,7 +640,7 @@ class HistoryTableDialog:
         except Exception as ex:
             snack(page, f"Failed to read history: {ex}", kind="error")
 
-    def _read_filtered_rows(self, q: str) -> tuple[int, list[dict]]:
+    def _read_filtered_rows(self, q: str) -> tuple[int | None, list[dict]]:
         """Stream-read the full CSV and return (matches_total, last_matches)."""
         q = str(q or "").strip()
         if not q:
@@ -649,6 +649,16 @@ class HistoryTableDialog:
         if self._use_sqlite and self.db_path is not None:
             fields = list(self._fieldnames or [])
             max_rows = self.max_rows if self.max_rows > 0 else 1000
+            if self._filter_no_count:
+                return (
+                    None,
+                    read_history_filtered_tail_no_count(
+                        db_path=self.db_path,
+                        q=q,
+                        fieldnames=fields,
+                        limit=max_rows,
+                    ),
+                )
             return read_history_filtered_tail(
                 db_path=self.db_path,
                 q=q,
@@ -671,7 +681,7 @@ class HistoryTableDialog:
 
     def _read_filtered_rows_for_fields(
         self, q: str, fieldnames: list[str]
-    ) -> tuple[int, list[dict]]:
+    ) -> tuple[int | None, list[dict]]:
         """Thread-friendly variant: uses provided fieldnames snapshot."""
         q = str(q or "").strip()
         if not q:
@@ -679,6 +689,16 @@ class HistoryTableDialog:
 
         if self._use_sqlite and self.db_path is not None:
             max_rows = self.max_rows if self.max_rows > 0 else 1000
+            if self._filter_no_count:
+                return (
+                    None,
+                    read_history_filtered_tail_no_count(
+                        db_path=self.db_path,
+                        q=q,
+                        fieldnames=list(fieldnames or []),
+                        limit=max_rows,
+                    ),
+                )
             return read_history_filtered_tail(
                 db_path=self.db_path,
                 q=q,
@@ -1249,10 +1269,16 @@ class HistoryTableDialog:
                     if seq != self._filter_seq:
                         return
 
-                    self._filtered_rows_data = self._sort_rows(list(matches_tail))
+                    if self._use_sqlite and self.db_path is not None:
+                        self._filtered_rows_data = list(matches_tail)
+                    else:
+                        self._filtered_rows_data = self._sort_rows(list(matches_tail))
 
                     if self._title_text is not None:
-                        self._title_text.value = f"{self.title} (showing {len(self._filtered_rows_data)} of {matches_total} matches)"
+                        if matches_total is None:
+                            self._title_text.value = f"{self.title} (showing {len(self._filtered_rows_data)} rows)"
+                        else:
+                            self._title_text.value = f"{self.title} (showing {len(self._filtered_rows_data)} of {matches_total} matches)"
 
                     if self._dt is not None:
                         widths = self._get_column_widths_snapshot()
@@ -1307,9 +1333,17 @@ class HistoryTableDialog:
             matches_total, matches_tail = self._read_filtered_rows(q_snapshot)
             if seq != self._filter_seq:
                 return
-            self._filtered_rows_data = self._sort_rows(list(matches_tail))
+            if self._use_sqlite and self.db_path is not None:
+                self._filtered_rows_data = list(matches_tail)
+            else:
+                self._filtered_rows_data = self._sort_rows(list(matches_tail))
             if self._title_text is not None:
-                self._title_text.value = f"{self.title} (showing {len(self._filtered_rows_data)} of {matches_total} matches)"
+                if matches_total is None:
+                    self._title_text.value = (
+                        f"{self.title} (showing {len(self._filtered_rows_data)} rows)"
+                    )
+                else:
+                    self._title_text.value = f"{self.title} (showing {len(self._filtered_rows_data)} of {matches_total} matches)"
             if self._dt is not None:
                 widths = self._get_column_widths_snapshot()
                 self._dt.rows = self._build_rows(self._filtered_rows_data, widths)

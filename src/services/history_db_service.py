@@ -46,6 +46,9 @@ def ensure_history_db(db_path: Path) -> None:
         conn.execute(
             "CREATE INDEX IF NOT EXISTS ix_history_shift ON history_rows(shift)"
         )
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS ix_history_date_field ON history_rows(date_field)"
+        )
         conn.execute("CREATE INDEX IF NOT EXISTS ix_history_user ON history_rows(user)")
 
 
@@ -196,18 +199,86 @@ def read_history_tail(
         lim = 500
 
     with sqlite3.connect(db_path) as conn:
-        cur = conn.execute("SELECT COUNT(*) FROM history_rows")
+        # COUNT(*) can be slow on large tables; MAX(row_id) is fast via the PK index.
+        cur = conn.execute("SELECT COALESCE(MAX(row_id), 0) FROM history_rows")
         total = int((cur.fetchone() or [0])[0] or 0)
+
+        # Sorting is pushed to SQLite to avoid Python sorting large row sets.
+        date_expr = "COALESCE(date_field, '')"
+        shift_expr = "LOWER(TRIM(COALESCE(shift, '')))"
+        shift_sort_key = (
+            "CASE "
+            f"WHEN {shift_expr} = '' THEN 10000 "
+            f"WHEN {shift_expr} LIKE '%all%shift%' THEN 9999 "
+            f"WHEN {shift_expr} LIKE 'shift %' THEN -CAST(SUBSTR({shift_expr}, 7) AS INT) "
+            "ELSE 0 END"
+        )
+
+        card_i = "CAST(COALESCE(card_index, '0') AS INT)"
+        detail_i = "CAST(COALESCE(detail_index, '0') AS INT)"
+        action_i = "CAST(COALESCE(action_index, '0') AS INT)"
 
         cols = ",".join(HISTORY_FIELDNAMES)
         cur = conn.execute(
-            f"SELECT {cols} FROM history_rows ORDER BY row_id DESC LIMIT ?", (lim,)
+            " ".join(
+                [
+                    f"SELECT {cols} FROM history_rows",
+                    "ORDER BY",
+                    f"{date_expr} DESC,",
+                    f"{shift_sort_key} ASC,",
+                    f"{shift_expr} ASC,",
+                    "COALESCE(saved_at, '') ASC,",
+                    "COALESCE(save_id, '') ASC,",
+                    f"{card_i} ASC,",
+                    f"{detail_i} ASC,",
+                    f"{action_i} ASC",
+                    "LIMIT ?",
+                ]
+            ),
+            (lim,),
         )
-        rows_desc = [dict(zip(HISTORY_FIELDNAMES, r)) for r in cur.fetchall()]
+        rows = [dict(zip(HISTORY_FIELDNAMES, r)) for r in cur.fetchall()]
 
-    # Display oldest->newest like the CSV tail behavior.
-    rows_desc.reverse()
-    return list(HISTORY_FIELDNAMES), total, rows_desc
+    return list(HISTORY_FIELDNAMES), total, rows
+
+
+def read_last_saved_user_date_shift(db_path: Path) -> tuple[str, str, str] | None:
+    """Return the most recent saved (user, date_field, shift).
+
+    Uses the latest `saved_at` value (descending). This is intended for quick UI
+    status display and avoids any COUNT(*) or large scans.
+    """
+
+    db_path = Path(db_path)
+    if not db_path.exists():
+        return None
+
+    ensure_history_db(db_path)
+
+    with sqlite3.connect(db_path) as conn:
+        conn.execute("PRAGMA busy_timeout = 1000")
+        cur = conn.execute(
+            " ".join(
+                [
+                    "SELECT",
+                    "COALESCE(user, ''),",
+                    "COALESCE(date_field, ''),",
+                    "COALESCE(shift, '')",
+                    "FROM history_rows",
+                    "ORDER BY COALESCE(saved_at, '') DESC, COALESCE(save_id, '') DESC",
+                    "LIMIT 1",
+                ]
+            )
+        )
+        row = cur.fetchone()
+        if not row:
+            return None
+
+    try:
+        user, date_field, shift = row
+        return str(user or ""), str(date_field or ""), str(shift or "")
+    except Exception:
+        return None
 
 
 def read_history_filtered_tail(
@@ -243,19 +314,114 @@ def read_history_filtered_tail(
     where = " OR ".join([f"LOWER(COALESCE({c}, '')) LIKE ?" for c in fields])
     params = [like] * len(fields)
 
+    date_expr = "COALESCE(date_field, '')"
+    shift_expr = "LOWER(TRIM(COALESCE(shift, '')))"
+    shift_sort_key = (
+        "CASE "
+        f"WHEN {shift_expr} = '' THEN 10000 "
+        f"WHEN {shift_expr} LIKE '%all%shift%' THEN 9999 "
+        f"WHEN {shift_expr} LIKE 'shift %' THEN -CAST(SUBSTR({shift_expr}, 7) AS INT) "
+        "ELSE 0 END"
+    )
+    card_i = "CAST(COALESCE(card_index, '0') AS INT)"
+    detail_i = "CAST(COALESCE(detail_index, '0') AS INT)"
+    action_i = "CAST(COALESCE(action_index, '0') AS INT)"
+
     with sqlite3.connect(db_path) as conn:
         cur = conn.execute(f"SELECT COUNT(*) FROM history_rows WHERE {where}", params)
         matches_total = int((cur.fetchone() or [0])[0] or 0)
 
         cols = ",".join(HISTORY_FIELDNAMES)
         cur = conn.execute(
-            f"SELECT {cols} FROM history_rows WHERE {where} ORDER BY row_id DESC LIMIT ?",
+            " ".join(
+                [
+                    f"SELECT {cols} FROM history_rows WHERE {where}",
+                    "ORDER BY",
+                    f"{date_expr} DESC,",
+                    f"{shift_sort_key} ASC,",
+                    f"{shift_expr} ASC,",
+                    "COALESCE(saved_at, '') ASC,",
+                    "COALESCE(save_id, '') ASC,",
+                    f"{card_i} ASC,",
+                    f"{detail_i} ASC,",
+                    f"{action_i} ASC",
+                    "LIMIT ?",
+                ]
+            ),
             [*params, lim],
         )
-        rows_desc = [dict(zip(HISTORY_FIELDNAMES, r)) for r in cur.fetchall()]
+        rows = [dict(zip(HISTORY_FIELDNAMES, r)) for r in cur.fetchall()]
 
-    rows_desc.reverse()
-    return matches_total, rows_desc
+    return matches_total, rows
+
+
+def read_history_filtered_tail_no_count(
+    *,
+    db_path: Path,
+    q: str,
+    fieldnames: list[str],
+    limit: int,
+) -> list[dict[str, str]]:
+    """Return last_matches without computing total matches.
+
+    This avoids COUNT(*) which can be slow on large tables.
+    Searches only within the provided fieldnames.
+    """
+
+    ensure_history_db(db_path)
+
+    q = str(q or "").strip()
+    if not q:
+        return []
+
+    lim = int(limit or 0)
+    if lim <= 0:
+        lim = 500
+
+    fields = [c for c in (fieldnames or []) if c in set(HISTORY_FIELDNAMES)]
+    if not fields:
+        return []
+
+    q_l = q.lower()
+    like = f"%{q_l}%"
+
+    where = " OR ".join([f"LOWER(COALESCE({c}, '')) LIKE ?" for c in fields])
+    params = [like] * len(fields)
+
+    date_expr = "COALESCE(date_field, '')"
+    shift_expr = "LOWER(TRIM(COALESCE(shift, '')))"
+    shift_sort_key = (
+        "CASE "
+        f"WHEN {shift_expr} = '' THEN 10000 "
+        f"WHEN {shift_expr} LIKE '%all%shift%' THEN 9999 "
+        f"WHEN {shift_expr} LIKE 'shift %' THEN -CAST(SUBSTR({shift_expr}, 7) AS INT) "
+        "ELSE 0 END"
+    )
+    card_i = "CAST(COALESCE(card_index, '0') AS INT)"
+    detail_i = "CAST(COALESCE(detail_index, '0') AS INT)"
+    action_i = "CAST(COALESCE(action_index, '0') AS INT)"
+
+    with sqlite3.connect(db_path) as conn:
+        cols = ",".join(HISTORY_FIELDNAMES)
+        cur = conn.execute(
+            " ".join(
+                [
+                    f"SELECT {cols} FROM history_rows WHERE {where}",
+                    "ORDER BY",
+                    f"{date_expr} DESC,",
+                    f"{shift_sort_key} ASC,",
+                    f"{shift_expr} ASC,",
+                    "COALESCE(saved_at, '') ASC,",
+                    "COALESCE(save_id, '') ASC,",
+                    f"{card_i} ASC,",
+                    f"{detail_i} ASC,",
+                    f"{action_i} ASC",
+                    "LIMIT ?",
+                ]
+            ),
+            [*params, lim],
+        )
+        return [dict(zip(HISTORY_FIELDNAMES, r)) for r in cur.fetchall()]
 
 
 def export_history_db_to_csv(

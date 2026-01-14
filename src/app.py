@@ -1,3 +1,5 @@
+import asyncio
+
 import flet as ft
 import pandas as pd
 
@@ -12,7 +14,9 @@ from src.core.errors import capture_traceback, report_exception, report_exceptio
 from src.core.logging import get_logger
 from src.core.safe import safe_event
 from src.services.config_service import get_ui_config
+from src.services.history_db_service import read_last_saved_user_date_shift
 from src.services.spa_facade import SpaFacade, SpaRequest
+from src.utils.helpers import data_app_path
 from src.utils.ui_helpers import snack
 
 
@@ -108,6 +112,7 @@ class DashboardApp(ft.Container):
             get_link_up=self._get_link_up,
             get_func_location=self._get_func_location,
             get_date_field=self._get_date_field,
+            on_history_saved=self._on_history_saved,
         )
 
         # use reusable ReportList component (keeps server-side order and stable keys)
@@ -133,6 +138,14 @@ class DashboardApp(ft.Container):
             height=12,
             visible=False,
             expand=True,
+        )
+
+        self.last_saved_info = ft.Text(
+            "",
+            size=8,
+            color=ft.Colors.BLUE_GREY_700,
+            italic=True,
+            text_align=ft.TextAlign.RIGHT,
         )
 
         self.status_bar = ft.Text("", size=11, color=ft.Colors.BLUE_GREY_700)
@@ -163,7 +176,16 @@ class DashboardApp(ft.Container):
                                 content=self.progress_bar,
                                 width=220,
                             ),
-                            self.status_bar,
+                            ft.Column(
+                                controls=[
+                                    self.status_bar,
+                                    self.last_saved_info,
+                                ],
+                                spacing=1,
+                                tight=True,
+                                alignment=ft.MainAxisAlignment.CENTER,
+                                horizontal_alignment=ft.CrossAxisAlignment.END,
+                            ),
                         ],
                         expand=True,
                         alignment=ft.MainAxisAlignment.END,
@@ -428,6 +450,83 @@ class DashboardApp(ft.Container):
         except Exception:
             pass
 
+    async def _refresh_last_saved_info_async(self, page: ft.Page | None):
+        """Update the header text with the most recent history metadata."""
+
+        try:
+            db_path = data_app_path("history.db", folder_name="data_app/history")
+
+            def _read():
+                return read_last_saved_user_date_shift(db_path)
+
+            meta = await asyncio.to_thread(_read)
+            if meta is None:
+                text = "Last data saved: (no history yet)"
+            else:
+                user, date_field, shift = meta
+                user = str(user or "").strip() or "unknown"
+                date_field = str(date_field or "").strip() or "unknown date"
+                shift = str(shift or "").strip() or "unknown shift"
+                text = f"Last data saved: {user} | {date_field} | {shift}"
+
+            if getattr(self, "last_saved_info", None) is not None:
+                self.last_saved_info.value = text
+                try:
+                    self.last_saved_info.update()
+                except Exception:
+                    pass
+            if page is not None:
+                try:
+                    page.update()
+                except Exception:
+                    pass
+        except Exception:
+            # Never block Get Data if history lookup fails.
+            return
+
+    def _on_history_saved(self, page: ft.Page | None) -> None:
+        """Called by ReportEditor after a successful save."""
+
+        if page is None:
+            return
+
+        runner = getattr(page, "run_task", None)
+        if callable(runner):
+
+            async def _run():
+                await self._refresh_last_saved_info_async(page)
+
+            try:
+                runner(_run)
+            except Exception:
+                pass
+            return
+
+        # Sync fallback (best-effort)
+        try:
+            db_path = data_app_path("history.db", folder_name="data_app/history")
+            meta = read_last_saved_user_date_shift(db_path)
+            if meta is None:
+                self.last_saved_info.value = "Last data saved: (no history yet)"
+            else:
+                user, date_field, shift = meta
+                user = str(user or "").strip() or "unknown"
+                date_field = str(date_field or "").strip() or "unknown date"
+                shift = str(shift or "").strip() or "unknown shift"
+                self.last_saved_info.value = (
+                    f"Last data saved by '{user}', at '{date_field}' - '{shift}'"
+                )
+            try:
+                self.last_saved_info.update()
+            except Exception:
+                pass
+            try:
+                page.update()
+            except Exception:
+                pass
+        except Exception:
+            return
+
     def _ensure_spa_facade(self, page: ft.Page | None) -> SpaFacade | None:
         facade = getattr(self, "_spa_facade", None)
         if facade is not None:
@@ -512,6 +611,12 @@ class DashboardApp(ft.Container):
             # Show progress immediately.
             self._set_loading(page, loading=True, status="Loading…")
 
+            # Refresh the "last saved" info without blocking Get Data.
+            try:
+                await self._refresh_last_saved_info_async(page)
+            except Exception:
+                pass
+
             try:
                 facade = self._ensure_spa_facade(page)
 
@@ -570,6 +675,29 @@ class DashboardApp(ft.Container):
             # Fallback to the old blocking behavior if run_task isn't available.
             self._set_loading(page, loading=True, status="Loading…")
             try:
+                try:
+                    # Sync best-effort (single-row query); safe to ignore failures.
+                    db_path = data_app_path(
+                        "history.db", folder_name="data_app/history"
+                    )
+                    meta = read_last_saved_user_date_shift(db_path)
+                    if meta is None:
+                        self.last_saved_info.value = "Last data saved: (no history yet)"
+                    else:
+                        user, date_field, shift = meta
+                        user = str(user or "").strip() or "unknown"
+                        date_field = str(date_field or "").strip() or "unknown date"
+                        shift = str(shift or "").strip() or "unknown shift"
+                        self.last_saved_info.value = (
+                            f"Last data saved: {user} | {date_field} | {shift}"
+                        )
+                    try:
+                        self.last_saved_info.update()
+                    except Exception:
+                        pass
+                except Exception:
+                    pass
+
                 facade = self._ensure_spa_facade(page)
 
                 if facade is None:
