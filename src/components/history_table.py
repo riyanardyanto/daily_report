@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import csv
+import re
 from collections import deque
 from datetime import date as _date
 from pathlib import Path
@@ -1197,6 +1198,27 @@ class HistoryTableDialog:
         if widths is None:
             widths = self._get_column_widths_snapshot()
         for row_obj in filtered:
+            row_color = None
+            try:
+                shift_v = str((row_obj or {}).get("shift", "") or "").strip()
+                shift_l = shift_v.lower()
+                if shift_l:
+                    if "all" in shift_l and "shift" in shift_l:
+                        row_color = ft.Colors.INDIGO_50
+                    else:
+                        m = re.search(r"\d+", shift_l)
+                        n = int(m.group(0)) if m else None
+                        if n == 1:
+                            row_color = ft.Colors.RED_50
+                        elif n == 2:
+                            row_color = ft.Colors.GREEN_50
+                        elif n == 3:
+                            row_color = ft.Colors.YELLOW_50
+                        else:
+                            row_color = ft.Colors.BLUE_GREY_50
+            except Exception:
+                row_color = None
+
             cells: list[ft.DataCell] = []
             for col in self._fieldnames:
                 try:
@@ -1212,7 +1234,10 @@ class HistoryTableDialog:
                         )
                     )
                 )
-            out_rows.append(ft.DataRow(cells=cells))
+            if row_color is None:
+                out_rows.append(ft.DataRow(cells=cells))
+            else:
+                out_rows.append(ft.DataRow(cells=cells, color=row_color))
         return out_rows
 
     def _apply_filter(self, _e=None):
