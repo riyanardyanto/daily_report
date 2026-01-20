@@ -364,6 +364,13 @@ class ReportEditor(ft.Container):
         if page is None:
             return
 
+        try:
+            if not (getattr(self.report_list, "controls", None) or []):
+                snack(page, "No cards to clear", kind="warning")
+                return
+        except Exception:
+            pass
+
         def _close_dialog(_e=None):
             try:
                 dlg.open = False

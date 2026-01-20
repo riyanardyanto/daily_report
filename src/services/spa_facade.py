@@ -299,6 +299,10 @@ class SpaFacade:
         try:
             # Run the blocking implementation in a worker thread.
             return await asyncio.to_thread(self.get_data_sync, req)
+        except asyncio.CancelledError:
+            # Important: do not swallow cancellation. This allows UI-level
+            # timeouts (asyncio.wait_for) to work predictably.
+            raise
         except Exception:
             try:
                 self._logger.exception("Failed to fetch/process SPA data")

@@ -1,4 +1,5 @@
 import csv
+import os
 import sys
 from pathlib import Path
 
@@ -45,8 +46,13 @@ def get_script_folder() -> Path:
 def get_data_app_dir(folder_name: str = "data_app", create: bool = True) -> Path:
     """Return the directory used to store app data.
 
-    The directory is created next to the executable when running as a
-    PyInstaller bundle, otherwise next to the entry script.
+    When running as a PyInstaller bundle, writing next to the executable can be
+    unsafe (Program Files permissions, OneDrive/network sync, shared folders).
+    We therefore prefer a per-user local data directory by default, but keep a
+    "portable" layout when the data folder already exists next to the exe.
+
+    Override:
+        Set env var DAILY_REPORT_DATA_DIR to force a specific root directory.
 
     Args:
         folder_name: Name of the data folder to use.
@@ -55,7 +61,35 @@ def get_data_app_dir(folder_name: str = "data_app", create: bool = True) -> Path
     Returns:
         Path: Absolute path to the data directory.
     """
-    data_dir = get_script_folder() / folder_name
+
+    def _user_data_root() -> Path:
+        # Per-user data root (no folder_name appended yet).
+        if sys.platform == "win32":
+            base = os.environ.get("LOCALAPPDATA") or os.environ.get("APPDATA")
+            if base:
+                return Path(base) / "Daily Report"
+        return Path.home() / ".daily_report"
+
+    # Allow forcing a custom root directory (e.g. portable deployments).
+    override_root = str(os.environ.get("DAILY_REPORT_DATA_DIR", "") or "").strip()
+    if override_root:
+        data_dir = Path(override_root) / folder_name
+    else:
+        portable_dir = get_script_folder() / folder_name
+
+        if getattr(sys, "frozen", False):
+            # Backward compatibility: if a portable folder already exists next
+            # to the exe (and has any contents), keep using it.
+            try:
+                if portable_dir.exists() and any(portable_dir.iterdir()):
+                    data_dir = portable_dir
+                else:
+                    data_dir = _user_data_root() / folder_name
+            except Exception:
+                data_dir = _user_data_root() / folder_name
+        else:
+            data_dir = portable_dir
+
     if create:
         data_dir.mkdir(parents=True, exist_ok=True)
     return data_dir

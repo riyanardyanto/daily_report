@@ -49,6 +49,7 @@ class DashboardApp(ft.Container):
 
         # Get Data concurrency + caching
         self._getdata_seq = 0
+        self._getdata_running = False
         # key -> (timestamp_monotonic, df, rng_str, metrics_rows, stops_rows)
         self._spa_cache: dict[
             tuple[str, str, str, str, str],
@@ -598,6 +599,21 @@ class DashboardApp(ft.Container):
     def update_tables(self, e=None):
         page = self._resolve_page(e)
 
+        # Avoid spawning multiple concurrent Get Data workers.
+        # This prevents piling up background threads if a request is slow/hung.
+        try:
+            if bool(getattr(self, "_getdata_running", False)):
+                if page is not None:
+                    snack(page, "Get Data masih berjalan…", kind="warning")
+                return
+        except Exception:
+            pass
+
+        try:
+            self._getdata_running = True
+        except Exception:
+            pass
+
         # Snapshot sidebar values on UI thread to avoid reading UI controls in worker thread.
         link_up, date_value, shift_value, func_location = (
             self._snapshot_sidebar_values()
@@ -606,6 +622,19 @@ class DashboardApp(ft.Container):
 
         # Seq guard: ignore stale results from previous clicks.
         my_seq = self._bump_getdata_seq()
+
+        # Overall timeout (UI-level failsafe) so Loading never runs forever.
+        overall_timeout_s = 75.0
+        try:
+            ctx = getattr(self, "_ctx", None)
+            spa_cfg = getattr(ctx, "spa", None) if ctx is not None else None
+            base_timeout = float(getattr(spa_cfg, "timeout", 30) or 30)
+            if base_timeout <= 0:
+                base_timeout = 30.0
+            # Add slack for HTML parsing/processing.
+            overall_timeout_s = max(20.0, min(240.0, base_timeout + 45.0))
+        except Exception:
+            overall_timeout_s = 75.0
 
         async def _run():
             # Show progress immediately.
@@ -631,7 +660,18 @@ class DashboardApp(ft.Container):
                     existing_metrics=existing_metrics,
                 )
 
-                resp = await facade.get_data(req)
+                try:
+                    resp = await asyncio.wait_for(
+                        facade.get_data(req), timeout=float(overall_timeout_s)
+                    )
+                except asyncio.TimeoutError:
+                    if page is not None:
+                        snack(
+                            page,
+                            f"Get Data timeout setelah {int(overall_timeout_s)} detik",
+                            kind="warning",
+                        )
+                    return
 
                 # Ignore stale completion if user clicked again.
                 if self._is_stale_seq(my_seq):
@@ -670,6 +710,10 @@ class DashboardApp(ft.Container):
                     snack(page, f"Failed to get SPA data: {ex}", kind="error")
             finally:
                 self._set_loading(page, loading=False)
+                try:
+                    self._getdata_running = False
+                except Exception:
+                    pass
 
         if page is None or not hasattr(page, "run_task"):
             # Fallback to the old blocking behavior if run_task isn't available.
@@ -749,10 +793,21 @@ class DashboardApp(ft.Container):
                     snack(page, f"Failed to get SPA data: {ex}", kind="error")
             finally:
                 self._set_loading(page, loading=False)
+                try:
+                    self._getdata_running = False
+                except Exception:
+                    pass
             return
 
         # Flet expects a coroutine *function* here, not a coroutine object.
-        page.run_task(_run)
+        try:
+            page.run_task(_run)
+        except Exception:
+            try:
+                self._getdata_running = False
+            except Exception:
+                pass
+            raise
 
     def on_stop_row_double(self, row: list):
         """Callback invoked when a stops-table row is double-clicked.

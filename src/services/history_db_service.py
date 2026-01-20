@@ -2,59 +2,137 @@ from __future__ import annotations
 
 import csv
 import sqlite3
+import shutil
+from datetime import datetime
 from pathlib import Path
 from typing import Any, Callable, Iterable
 
 from src.services.history_schema import HISTORY_FIELDNAMES, build_history_rows
 
 
-def ensure_history_db(db_path: Path) -> None:
-    db_path = Path(db_path)
-    db_path.parent.mkdir(parents=True, exist_ok=True)
+def _is_malformed_sqlite_error(ex: BaseException) -> bool:
+    msg = str(ex or "").lower()
+    return "disk image is malformed" in msg or "database disk image is malformed" in msg
 
-    with sqlite3.connect(db_path) as conn:
-        conn.execute("PRAGMA foreign_keys = ON")
-        conn.execute("PRAGMA journal_mode = WAL")
-        conn.execute("PRAGMA synchronous = NORMAL")
-        conn.execute("PRAGMA temp_store = MEMORY")
-        conn.execute("PRAGMA busy_timeout = 3000")
 
-        cols = ",\n            ".join([f"{c} TEXT" for c in HISTORY_FIELDNAMES])
-        conn.execute(
-            f"""
+def _history_backup_path(db_path: Path) -> Path:
+    # Keep the .db extension and append a stable suffix.
+    return Path(str(db_path) + ".bak")
+
+
+def _cleanup_wal_sidecars(db_path: Path) -> None:
+    # If we restore/rollover the main db file, any leftover -wal/-shm can
+    # mismatch and cause errors.
+    try:
+        for suffix in ("-wal", "-shm"):
+            p = Path(str(db_path) + suffix)
+            if p.exists():
+                try:
+                    p.unlink()
+                except Exception:
+                    pass
+    except Exception:
+        return
+
+
+def _configure_connection(conn: sqlite3.Connection) -> None:
+    conn.execute("PRAGMA foreign_keys = ON")
+    conn.execute("PRAGMA journal_mode = WAL")
+    conn.execute("PRAGMA synchronous = NORMAL")
+    conn.execute("PRAGMA temp_store = MEMORY")
+    conn.execute("PRAGMA busy_timeout = 3000")
+
+
+def _connect(db_path: Path) -> sqlite3.Connection:
+    conn = sqlite3.connect(Path(db_path))
+    _configure_connection(conn)
+    return conn
+
+
+def _create_schema(conn: sqlite3.Connection) -> None:
+    cols = ",\n            ".join([f"{c} TEXT" for c in HISTORY_FIELDNAMES])
+    conn.execute(
+        f"""
             CREATE TABLE IF NOT EXISTS history_rows (
                 row_id INTEGER PRIMARY KEY AUTOINCREMENT,
                 {cols}
             )
             """.strip()
-        )
+    )
 
-        # Prevent duplicate inserts during migration.
-        conn.execute(
-            """
+    # Prevent duplicate inserts during migration.
+    conn.execute(
+        """
             CREATE UNIQUE INDEX IF NOT EXISTS ux_history_row
             ON history_rows(save_id, card_index, detail_index, action_index)
             """.strip()
-        )
+    )
 
-        conn.execute(
-            "CREATE INDEX IF NOT EXISTS ix_history_saved_at ON history_rows(saved_at)"
-        )
-        conn.execute(
-            "CREATE INDEX IF NOT EXISTS ix_history_link_up ON history_rows(link_up)"
-        )
-        conn.execute(
-            "CREATE INDEX IF NOT EXISTS ix_history_shift ON history_rows(shift)"
-        )
-        conn.execute(
-            "CREATE INDEX IF NOT EXISTS ix_history_date_field ON history_rows(date_field)"
-        )
-        conn.execute("CREATE INDEX IF NOT EXISTS ix_history_user ON history_rows(user)")
+    conn.execute("CREATE INDEX IF NOT EXISTS ix_history_saved_at ON history_rows(saved_at)")
+    conn.execute("CREATE INDEX IF NOT EXISTS ix_history_link_up ON history_rows(link_up)")
+    conn.execute("CREATE INDEX IF NOT EXISTS ix_history_shift ON history_rows(shift)")
+    conn.execute("CREATE INDEX IF NOT EXISTS ix_history_date_field ON history_rows(date_field)")
+    conn.execute("CREATE INDEX IF NOT EXISTS ix_history_user ON history_rows(user)")
+
+
+def _restore_or_rollover_corrupt_db(db_path: Path) -> None:
+    db_path = Path(db_path)
+    if not db_path.exists():
+        return
+
+    stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
+    corrupt_path = db_path.with_name(f"{db_path.stem}.corrupt-{stamp}{db_path.suffix}")
+
+    # Move aside the corrupt file first.
+    try:
+        db_path.replace(corrupt_path)
+    except Exception:
+        # If replace fails (e.g. permissions), try a best-effort copy then truncate.
+        try:
+            shutil.copy2(db_path, corrupt_path)
+            db_path.unlink(missing_ok=True)  # type: ignore[attr-defined]
+        except Exception:
+            pass
+
+    _cleanup_wal_sidecars(db_path)
+
+    bak = _history_backup_path(db_path)
+    if bak.exists():
+        try:
+            shutil.copy2(bak, db_path)
+            _cleanup_wal_sidecars(db_path)
+            return
+        except Exception:
+            # If restore fails, we'll fall back to creating a new db.
+            pass
+
+    # No backup or restore failed: create a new empty db.
+    try:
+        with _connect(db_path) as conn:
+            _create_schema(conn)
+    except Exception:
+        return
+
+
+def ensure_history_db(db_path: Path) -> None:
+    db_path = Path(db_path)
+    db_path.parent.mkdir(parents=True, exist_ok=True)
+
+    try:
+        with _connect(db_path) as conn:
+            _create_schema(conn)
+    except sqlite3.DatabaseError as ex:
+        if _is_malformed_sqlite_error(ex):
+            _restore_or_rollover_corrupt_db(db_path)
+            with _connect(db_path) as conn:
+                _create_schema(conn)
+            return
+        raise
 
 
 def count_history_rows(db_path: Path) -> int:
     ensure_history_db(db_path)
-    with sqlite3.connect(db_path) as conn:
+    with _connect(db_path) as conn:
         cur = conn.execute("SELECT COUNT(*) FROM history_rows")
         row = cur.fetchone()
         return int(row[0] if row and row[0] is not None else 0)
@@ -81,8 +159,7 @@ def append_history_rows(db_path: Path, rows: Iterable[dict[str, Any]]) -> int:
     placeholders = ",".join(["?"] * len(HISTORY_FIELDNAMES))
     values = [tuple(r[c] for c in HISTORY_FIELDNAMES) for r in normalized]
 
-    with sqlite3.connect(db_path) as conn:
-        conn.execute("PRAGMA busy_timeout = 3000")
+    with _connect(db_path) as conn:
         conn.execute("BEGIN")
         try:
             conn.executemany(
@@ -90,6 +167,24 @@ def append_history_rows(db_path: Path, rows: Iterable[dict[str, Any]]) -> int:
                 values,
             )
             conn.commit()
+
+            # Keep a best-effort backup after a successful commit.
+            # If the DB is already corrupt, quick_check may fail; we then skip backup.
+            try:
+                ok_row = conn.execute("PRAGMA quick_check(1)").fetchone()
+                ok = bool(ok_row and str(ok_row[0] or "").strip().lower() == "ok")
+            except Exception:
+                ok = False
+
+            if ok:
+                try:
+                    bak_path = _history_backup_path(db_path)
+                    bak_path.parent.mkdir(parents=True, exist_ok=True)
+                    with sqlite3.connect(bak_path) as dst:
+                        # Use SQLite backup API (safe with WAL).
+                        conn.backup(dst)
+                except Exception:
+                    pass
         except Exception:
             conn.rollback()
             raise
@@ -198,7 +293,7 @@ def read_history_tail(
     if lim <= 0:
         lim = 500
 
-    with sqlite3.connect(db_path) as conn:
+    with _connect(db_path) as conn:
         # COUNT(*) can be slow on large tables; MAX(row_id) is fast via the PK index.
         cur = conn.execute("SELECT COALESCE(MAX(row_id), 0) FROM history_rows")
         total = int((cur.fetchone() or [0])[0] or 0)
@@ -255,8 +350,7 @@ def read_last_saved_user_date_shift(db_path: Path) -> tuple[str, str, str] | Non
 
     ensure_history_db(db_path)
 
-    with sqlite3.connect(db_path) as conn:
-        conn.execute("PRAGMA busy_timeout = 1000")
+    with _connect(db_path) as conn:
         cur = conn.execute(
             " ".join(
                 [
@@ -327,7 +421,7 @@ def read_history_filtered_tail(
     detail_i = "CAST(COALESCE(detail_index, '0') AS INT)"
     action_i = "CAST(COALESCE(action_index, '0') AS INT)"
 
-    with sqlite3.connect(db_path) as conn:
+    with _connect(db_path) as conn:
         cur = conn.execute(f"SELECT COUNT(*) FROM history_rows WHERE {where}", params)
         matches_total = int((cur.fetchone() or [0])[0] or 0)
 
@@ -401,7 +495,7 @@ def read_history_filtered_tail_no_count(
     detail_i = "CAST(COALESCE(detail_index, '0') AS INT)"
     action_i = "CAST(COALESCE(action_index, '0') AS INT)"
 
-    with sqlite3.connect(db_path) as conn:
+    with _connect(db_path) as conn:
         cols = ",".join(HISTORY_FIELDNAMES)
         cur = conn.execute(
             " ".join(
@@ -466,7 +560,7 @@ def export_history_db_to_csv(
 
     select_cols = ",".join(fields)
 
-    with sqlite3.connect(db_path) as conn:
+    with _connect(db_path) as conn:
         if where:
             cur = conn.execute(
                 f"SELECT COUNT(*) FROM history_rows{where}",

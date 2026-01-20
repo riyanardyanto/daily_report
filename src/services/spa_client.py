@@ -1,4 +1,3 @@
-
 from io import StringIO
 
 import httpx
@@ -66,14 +65,24 @@ def fetch_data_from_api(
     client_kwargs: dict[str, object] = {"auth": auth}
     if verify_ssl is not None:
         client_kwargs["verify"] = bool(verify_ssl)
-    if timeout is not None:
-        try:
-            client_kwargs["timeout"] = httpx.Timeout(float(timeout))
-        except Exception:
-            pass
+
+    # Always set a timeout to prevent hanging requests.
+    timeout_s = 30.0
+    try:
+        if timeout is not None:
+            timeout_s = float(timeout)
+        if timeout_s <= 0:
+            timeout_s = 30.0
+    except Exception:
+        timeout_s = 30.0
+
+    try:
+        client_kwargs["timeout"] = httpx.Timeout(timeout_s)
+    except Exception:
+        pass
 
     with httpx.Client(**client_kwargs) as client:
-        response = client.get(url)
+        response = client.get(url, follow_redirects=True)
         response.raise_for_status()
         data = response.text
 
