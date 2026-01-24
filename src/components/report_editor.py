@@ -6,7 +6,7 @@ from src.components.history_table import HistoryTableDialog
 from src.components.qr_code_dialog import QrCodeDialog
 from src.components.report_list_view import ReportList
 from src.components.target_editor import TargetEditorDialog
-from src.services.history_db_service import save_report_history_sqlite
+from src.services.history_db_adapter import save_report_history_sqlite
 from src.utils.helpers import data_app_path, load_settings_options
 from src.utils.theme import DANGER, INFO, ON_COLOR, PRIMARY, SECONDARY, SUCCESS, WARNING
 from src.utils.ui_helpers import open_dialog, resolve_page, snack

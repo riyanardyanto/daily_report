@@ -4,17 +4,16 @@ import asyncio
 import time
 from dataclasses import dataclass
 
-import pandas as pd
-
 from src.core.context import AppContext
 from src.core.logging import get_logger
-from src.services.spa_service import (
-    fetch_data_from_api,
+from src.services.spa_client import get_url_spa
+from src.services.spa_processor import (
+    SpaTable,
+    fetch_data_from_spa_with_retries,
     get_data_actual,
     get_data_range,
     get_line_performance_details,
-    get_url_spa,
-    process_data,
+    process_data_spa,
 )
 from src.utils.helpers import load_targets_csv
 
@@ -30,7 +29,7 @@ class SpaRequest:
 
 @dataclass(frozen=True, slots=True)
 class SpaResponse:
-    df: pd.DataFrame | None
+    df: SpaTable | None
     rng_str: str
     metrics_rows: list[tuple[str, str, str]]
     stops_rows: list[list]
@@ -54,7 +53,7 @@ class SpaFacade:
         cache_ttl_s: float = 15.0,
         cache: dict[
             tuple[str, str, str, str, str],
-            tuple[float, pd.DataFrame, str, list[tuple[str, str, str]], list[list]],
+            tuple[float, SpaTable, str, list[tuple[str, str, str]], list[list]],
         ]
         | None = None,
         max_cache_items: int = 12,
@@ -170,22 +169,30 @@ class SpaFacade:
         )
         url = local_url if env == "development" else spa_url
 
-        df = fetch_data_from_api(
-            url,
-            username,
-            password,
+        # df = fetch_data_from_api(
+        #     url,
+        #     username,
+        #     password,
+        #     verify_ssl=getattr(spa_cfg, "verify_ssl", None),
+        #     timeout=getattr(spa_cfg, "timeout", None),
+        # )
+
+        df = fetch_data_from_spa_with_retries(
+            url=url,
+            username=username,
+            password=password,
             verify_ssl=getattr(spa_cfg, "verify_ssl", None),
             timeout=getattr(spa_cfg, "timeout", None),
         )
 
-        if df is None or getattr(df, "empty", False):
+        if not df:
             return SpaResponse(df=None, rng_str="", metrics_rows=[], stops_rows=[])
 
-        df_processed = process_data(df)
+        split_tables = process_data_spa(spa_df=df)
 
         rng_str = ""
         try:
-            rng = get_data_range(df_processed)
+            rng = get_data_range(split_tables)
             rng_str = str(rng) if rng is not None else ""
         except Exception:
             rng_str = ""
@@ -193,22 +200,19 @@ class SpaFacade:
         # Metrics rows (target + actual)
         metrics_rows: list[tuple[str, str, str]] = []
         try:
-            actual_df = get_data_actual(df_processed)
+            actual_rows = get_data_actual(split_tables)
             actuals: dict[str, str] = {}
             actual_metric_order: list[str] = []
-            if hasattr(actual_df, "iterrows"):
-                for _idx, row in actual_df.iterrows():
-                    try:
-                        metric = str(row.get("Metric", "") or "").strip()
-                        value = row.get("Value", "")
-                        if metric:
-                            if metric not in actual_metric_order:
-                                actual_metric_order.append(metric)
-                            actuals[metric] = str(
-                                value if value is not None else ""
-                            ).strip()
-                    except Exception:
-                        pass
+            for metric, value in list(actual_rows or []):
+                try:
+                    metric = str(metric or "").strip()
+                    if not metric:
+                        continue
+                    if metric not in actual_metric_order:
+                        actual_metric_order.append(metric)
+                    actuals[metric] = str(value if value is not None else "").strip()
+                except Exception:
+                    pass
 
             lu = req.link_up[-2:].lower() if req.link_up else ""
             fl = req.func_location[:4].lower() if req.func_location else ""
@@ -256,11 +260,8 @@ class SpaFacade:
         # Stops rows
         stops_rows: list[list] = []
         try:
-            line_df = get_line_performance_details(df_processed)
-            if line_df:
-                first_seg = line_df[0]
-                if hasattr(first_seg, "values"):
-                    stops_rows = first_seg.values.tolist()
+            stops_rows = [list(r) for r in get_line_performance_details(split_tables)]
+
         except Exception:
             stops_rows = []
 
@@ -308,4 +309,5 @@ class SpaFacade:
                 self._logger.exception("Failed to fetch/process SPA data")
             except Exception:
                 pass
+            return SpaResponse(df=None, rng_str="", metrics_rows=[], stops_rows=[])
             return SpaResponse(df=None, rng_str="", metrics_rows=[], stops_rows=[])

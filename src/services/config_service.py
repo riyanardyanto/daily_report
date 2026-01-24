@@ -24,6 +24,19 @@ password = ""
 base_url = "https://ots.spappa.aws.private-pmideep.biz/db.aspx?"
 verify_ssl = false
 timeout = 30
+
+[HISTORY_SYNC]
+# Optional: force sync JSON folder (shared path for all PCs).
+# If left empty, the packaged .exe defaults to using `<exe_dir>/sync`.
+# Recommended for multi-PC deployments. Example (UNC):
+# sync_dir = "\\\\SERVER\\Share\\DailyReportSync"
+sync_dir = ""
+
+# Cleanup/retention for sync JSON files in the shared folder.
+# - retention_days: archive (move) files older than N days into `archive/`.
+# - keep_latest_fullsync: keep N newest fullsync_*.json files for onboarding.
+retention_days = 30
+keep_latest_fullsync = 1
 """
 
 
@@ -101,6 +114,60 @@ class UiConfig:
     history_max_rows: int = 500
     qr_cache_size: int = 20
     spa_cache_ttl_seconds: int = 15
+
+
+@dataclass(frozen=True)
+class HistorySyncConfig:
+    sync_dir: str = ""
+    retention_days: int = 30
+    keep_latest_fullsync: int = 1
+
+
+def get_history_sync_config() -> tuple[HistorySyncConfig, str | None]:
+    """Read sync/cleanup settings from [HISTORY_SYNC] section."""
+    cfg, _path, err = load_config_toml()
+    if err:
+        return HistorySyncConfig(), err
+
+    sec = cfg.get("HISTORY_SYNC") if isinstance(cfg, dict) else None
+    if not isinstance(sec, dict):
+        sec = {}
+
+    def _s(key: str, default: str = "") -> str:
+        try:
+            return str(sec.get(key, default) or "").strip()
+        except Exception:
+            return default
+
+    def _i(key: str, default: int) -> int:
+        try:
+            v = sec.get(key, default)
+            return int(v)
+        except Exception:
+            return default
+
+    retention_days = _i("retention_days", 30)
+    keep_latest_fullsync = _i("keep_latest_fullsync", 1)
+
+    # Clamp to safe ranges
+    if retention_days <= 0:
+        retention_days = 30
+    if retention_days > 3650:
+        retention_days = 3650
+
+    if keep_latest_fullsync < 0:
+        keep_latest_fullsync = 0
+    if keep_latest_fullsync > 20:
+        keep_latest_fullsync = 20
+
+    return (
+        HistorySyncConfig(
+            sync_dir=_s("sync_dir", ""),
+            retention_days=retention_days,
+            keep_latest_fullsync=keep_latest_fullsync,
+        ),
+        None,
+    )
 
 
 def get_ui_config() -> tuple[UiConfig, str | None]:

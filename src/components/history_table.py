@@ -9,11 +9,14 @@ from pathlib import Path
 
 import flet as ft
 
-from src.services.config_service import get_ui_config
-from src.services.history_db_service import (
+from src.services.config_service import get_history_sync_config, get_ui_config
+from src.services.history_db_adapter import (
+    cleanup_sync_files,
     count_history_rows,
     export_history_db_to_csv,
+    manual_sync,
     migrate_history_csv_to_sqlite,
+    publish_all_history_to_sync,
     read_history_filtered_tail,
     read_history_filtered_tail_no_count,
     read_history_tail,
@@ -171,6 +174,146 @@ class HistoryTableDialog:
         except Exception:
             return list(rows)
 
+    def _on_publish_all_history_click(self, _e=None):
+        page = self.page
+        if page is None:
+            return
+
+        def _close(_ev=None):
+            try:
+                dlg.open = False
+                page.update()
+            except Exception:
+                pass
+
+        def _confirm(_ev=None):
+            _close()
+            snack(page, "Publishing full history…", kind="warning")
+
+            async def _run_publish():
+                try:
+
+                    def _worker():
+                        return publish_all_history_to_sync()
+
+                    ok, msg = await asyncio.to_thread(_worker)
+                    snack(page, msg, kind="success" if ok else "error")
+                except Exception as ex:
+                    snack(page, f"Publish failed: {ex}", kind="error")
+
+            runner = getattr(page, "run_task", None)
+            if callable(runner):
+                try:
+                    runner(_run_publish)
+                    return
+                except Exception:
+                    pass
+
+            try:
+                ok, msg = publish_all_history_to_sync()
+                snack(page, msg, kind="success" if ok else "error")
+            except Exception as ex:
+                snack(page, f"Publish failed: {ex}", kind="error")
+
+        dlg = ft.AlertDialog(
+            modal=True,
+            title=ft.Text("Publish full history"),
+            content=ft.Text(
+                "This will export ALL local history to the shared sync folder as a single file. "
+                "Use this once when onboarding a new PC. Continue?"
+            ),
+            actions=[
+                ft.TextButton(
+                    "Cancel", on_click=_close, style=ft.ButtonStyle(color=SECONDARY)
+                ),
+                ft.ElevatedButton(
+                    "Publish",
+                    on_click=_confirm,
+                    bgcolor=ft.Colors.INDIGO_600,
+                    color=ON_COLOR,
+                ),
+            ],
+            actions_alignment=ft.MainAxisAlignment.END,
+            on_dismiss=_close,
+        )
+
+        open_dialog(page, dlg)
+
+    def _on_cleanup_sync_files_click(self, _e=None):
+        page = self.page
+        if page is None:
+            return
+
+        sync_cfg, _cfg_err = get_history_sync_config()
+        retention_days = int(getattr(sync_cfg, "retention_days", 30) or 30)
+        keep_latest_fullsync = int(getattr(sync_cfg, "keep_latest_fullsync", 1) or 1)
+
+        def _close(_ev=None):
+            try:
+                dlg.open = False
+                page.update()
+            except Exception:
+                pass
+
+        def _confirm(_ev=None):
+            _close()
+            snack(page, "Cleaning up sync files…", kind="warning")
+
+            async def _run_cleanup():
+                try:
+
+                    def _worker():
+                        return cleanup_sync_files(
+                            retention_days=retention_days,
+                            keep_latest_fullsync=keep_latest_fullsync,
+                        )
+
+                    ok, msg = await asyncio.to_thread(_worker)
+                    snack(page, msg, kind="success" if ok else "error")
+                except Exception as ex:
+                    snack(page, f"Cleanup failed: {ex}", kind="error")
+
+            runner = getattr(page, "run_task", None)
+            if callable(runner):
+                try:
+                    runner(_run_cleanup)
+                    return
+                except Exception:
+                    pass
+
+            try:
+                ok, msg = cleanup_sync_files(
+                    retention_days=retention_days,
+                    keep_latest_fullsync=keep_latest_fullsync,
+                )
+                snack(page, msg, kind="success" if ok else "error")
+            except Exception as ex:
+                snack(page, f"Cleanup failed: {ex}", kind="error")
+
+        dlg = ft.AlertDialog(
+            modal=True,
+            title=ft.Text("Clean up sync files"),
+            content=ft.Text(
+                "This will move old sync_*.json/fullsync_*.json into an 'archive' subfolder (no deletion). "
+                f"Archive files older than {retention_days} days and keep {keep_latest_fullsync} newest fullsync file(s). Continue?"
+            ),
+            actions=[
+                ft.TextButton(
+                    "Cancel", on_click=_close, style=ft.ButtonStyle(color=SECONDARY)
+                ),
+                ft.ElevatedButton(
+                    "Clean up",
+                    on_click=_confirm,
+                    bgcolor=ft.Colors.DEEP_ORANGE_600,
+                    color=ON_COLOR,
+                ),
+            ],
+            actions_alignment=ft.MainAxisAlignment.END,
+            on_dismiss=_close,
+        )
+
+        open_dialog(page, dlg)
+
     def show(self):
         page = self.page
         if page is None:
@@ -178,8 +321,13 @@ class HistoryTableDialog:
 
         if self._use_sqlite and self.db_path is not None:
             if not self.db_path.exists():
-                snack(page, f"History DB not found: {self.db_path}", kind="warning")
-                return
+                # When running in Local+Sync mode, the adapter uses a local DB and
+                # the legacy shared-file path may not exist. Allow opening anyway.
+                snack(
+                    page,
+                    f"History DB not found: {self.db_path} (using local cache)",
+                    kind="warning",
+                )
         else:
             if not self.csv_path.exists():
                 snack(page, f"History not found: {self.csv_path}", kind="warning")
@@ -226,11 +374,27 @@ class HistoryTableDialog:
             actions=[
                 ft.Row(
                     controls=[
+                        ft.ElevatedButton(
+                            "Publish all history",
+                            on_click=self._on_publish_all_history_click,
+                            color=ON_COLOR,
+                            bgcolor=ft.Colors.INDIGO_600,
+                        )
+                        if (self._use_sqlite and self.db_path is not None)
+                        else ft.Container(),
+                        ft.ElevatedButton(
+                            "Clean up sync files",
+                            on_click=self._on_cleanup_sync_files_click,
+                            color=ON_COLOR,
+                            bgcolor=ft.Colors.DEEP_ORANGE_600,
+                        )
+                        if (self._use_sqlite and self.db_path is not None)
+                        else ft.Container(),
                         ft.TextButton(
                             "Close",
                             on_click=self.close,
                             style=ft.ButtonStyle(color=SECONDARY),
-                        )
+                        ),
                     ],
                     alignment=ft.MainAxisAlignment.END,
                     spacing=8,
@@ -244,6 +408,26 @@ class HistoryTableDialog:
 
         async def _load_async():
             try:
+                # Auto-sync (import/export) before reading history when using SQLite.
+                # This pulls latest rows from other PCs into the local cache.
+                if self._use_sqlite and self.db_path is not None:
+                    try:
+                        try:
+                            loading_text.value = "Syncing…"
+                            loading_text.update()
+                        except Exception:
+                            pass
+
+                        imported, exported = await asyncio.to_thread(manual_sync)
+                        if imported or exported:
+                            try:
+                                loading_text.value = f"Sync done: imported {imported}, exported {exported}"
+                                loading_text.update()
+                            except Exception:
+                                pass
+                    except Exception:
+                        # Sync failures should never block viewing history.
+                        pass
 
                 def _read_source():
                     max_rows = self.max_rows if self.max_rows > 0 else 1000
@@ -386,13 +570,22 @@ class HistoryTableDialog:
 
                 if self._dlg is not None:
                     controls: list[ft.Control] = [
-                        ft.TextButton(
-                            "Close",
-                            on_click=self.close,
-                            style=ft.ButtonStyle(color=SECONDARY),
+                        ft.ElevatedButton(
+                            "Publish all history",
+                            on_click=self._on_publish_all_history_click,
+                            color=ON_COLOR,
+                            bgcolor=ft.Colors.INDIGO_600,
                         )
                     ]
                     if self._use_sqlite and self.db_path is not None:
+                        controls.append(
+                            ft.ElevatedButton(
+                                "Clean up sync files",
+                                on_click=self._on_cleanup_sync_files_click,
+                                color=ON_COLOR,
+                                bgcolor=ft.Colors.DEEP_ORANGE_600,
+                            )
+                        )
                         controls.append(
                             ft.ElevatedButton(
                                 "Load from CSV",
@@ -407,6 +600,13 @@ class HistoryTableDialog:
                             on_click=self._on_export_click,
                             color=ON_COLOR,
                             bgcolor=PRIMARY,
+                        )
+                    )
+                    controls.append(
+                        ft.TextButton(
+                            "Close",
+                            on_click=self.close,
+                            style=ft.ButtonStyle(color=SECONDARY),
                         )
                     )
                     self._dlg.actions = [

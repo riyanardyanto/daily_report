@@ -1,8 +1,8 @@
 from __future__ import annotations
 
 import csv
-import sqlite3
 import shutil
+import sqlite3
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Callable, Iterable
@@ -36,11 +36,27 @@ def _cleanup_wal_sidecars(db_path: Path) -> None:
 
 
 def _configure_connection(conn: sqlite3.Connection) -> None:
+    """Configure SQLite connection.
+
+    NETWORK SAFETY FIXES:
+    - DISABLE WAL mode (causes corruption on network drives)
+    - Use DELETE journal mode (safe for SMB/CIFS)
+    - FULL synchronous for data integrity
+    - Increased timeout for network latency
+    """
     conn.execute("PRAGMA foreign_keys = ON")
-    conn.execute("PRAGMA journal_mode = WAL")
-    conn.execute("PRAGMA synchronous = NORMAL")
+
+    # CRITICAL: WAL mode CORRUPTS on network drives!
+    # WAL requires shared memory which is unreliable on SMB/CIFS
+    conn.execute("PRAGMA journal_mode = DELETE")  # Changed from WAL
+
+    # FULL synchronous for data integrity on network
+    conn.execute("PRAGMA synchronous = FULL")  # Changed from NORMAL
+
     conn.execute("PRAGMA temp_store = MEMORY")
-    conn.execute("PRAGMA busy_timeout = 3000")
+
+    # Drastically increase timeout for network latency
+    conn.execute("PRAGMA busy_timeout = 30000")  # 30s (was 3s)
 
 
 def _connect(db_path: Path) -> sqlite3.Connection:
@@ -68,10 +84,16 @@ def _create_schema(conn: sqlite3.Connection) -> None:
             """.strip()
     )
 
-    conn.execute("CREATE INDEX IF NOT EXISTS ix_history_saved_at ON history_rows(saved_at)")
-    conn.execute("CREATE INDEX IF NOT EXISTS ix_history_link_up ON history_rows(link_up)")
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS ix_history_saved_at ON history_rows(saved_at)"
+    )
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS ix_history_link_up ON history_rows(link_up)"
+    )
     conn.execute("CREATE INDEX IF NOT EXISTS ix_history_shift ON history_rows(shift)")
-    conn.execute("CREATE INDEX IF NOT EXISTS ix_history_date_field ON history_rows(date_field)")
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS ix_history_date_field ON history_rows(date_field)"
+    )
     conn.execute("CREATE INDEX IF NOT EXISTS ix_history_user ON history_rows(user)")
 
 

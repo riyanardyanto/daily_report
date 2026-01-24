@@ -187,5 +187,6 @@ Catatan:
 - **Data tidak muncul**: cek apakah `data_app/history/history.db` ada dan file target di `data_app/targets/` tersedia.
 	Jika Anda masih punya `data_app/history/history.csv` (atau file CSV lain), lakukan import ke DB (lihat bagian **Import history.csv ke history.db**).
 - **Konfigurasi tidak terbaca**: pastikan `data_app/settings/config.toml` ada dan tidak kosong.
-- **Muncul warning GIL dari pandas (Python 3.14 free-threaded)**: warning ini biasanya tidak menghentikan aplikasi. Jika ingin minim warning/lebih stabil, gunakan Python 3.11/3.12 sesuai rekomendasi di **Prasyarat**.
+- **Muncul warning GIL (Python 3.14 free-threaded)**: warning ini biasanya tidak menghentikan aplikasi. Jika ingin minim warning/lebih stabil, gunakan Python 3.11/3.12 sesuai rekomendasi di **Prasyarat**.
+
 

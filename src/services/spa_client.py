@@ -1,7 +1,4 @@
-from io import StringIO
-
 import httpx
-import pandas as pd
 from httpx_ntlm import HttpNtlmAuth
 
 
@@ -57,8 +54,13 @@ def fetch_data_from_api(
     *,
     verify_ssl: bool | None = None,
     timeout: int | float | None = None,
-) -> pd.DataFrame:
-    """Fetch SPA HTML table via NTLM auth and return as DataFrame."""
+) -> str:
+    """Fetch SPA HTML tables via NTLM auth and return as a string.
+
+    Notes:
+    - This avoids `pandas.read_html` (and therefore avoids requiring `lxml`).
+    - The returned DataFrame uses numeric string column names: '0', '1', '2', ...
+    """
 
     auth = HttpNtlmAuth(username, password)
 
@@ -82,12 +84,7 @@ def fetch_data_from_api(
         pass
 
     with httpx.Client(**client_kwargs) as client:
-        response = client.get(url, follow_redirects=True)
+        response: httpx.Response = client.get(url, follow_redirects=True)
         response.raise_for_status()
-        data = response.text
 
-    dfs = pd.read_html(StringIO(data))
-    for df in dfs:
-        if len(df) > 20:
-            return df
-    return pd.DataFrame()
+    return response.text

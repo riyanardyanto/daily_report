@@ -1,7 +1,7 @@
 import asyncio
+from typing import Any
 
 import flet as ft
-import pandas as pd
 
 from src.components.card_panel import CardPanel
 from src.components.metrics_table import MetricsTable
@@ -14,7 +14,7 @@ from src.core.errors import capture_traceback, report_exception, report_exceptio
 from src.core.logging import get_logger
 from src.core.safe import safe_event
 from src.services.config_service import get_ui_config
-from src.services.history_db_service import read_last_saved_user_date_shift
+from src.services.history_db_adapter import read_last_saved_user_date_shift
 from src.services.spa_facade import SpaFacade, SpaRequest
 from src.utils.helpers import data_app_path
 from src.utils.ui_helpers import snack
@@ -53,7 +53,7 @@ class DashboardApp(ft.Container):
         # key -> (timestamp_monotonic, df, rng_str, metrics_rows, stops_rows)
         self._spa_cache: dict[
             tuple[str, str, str, str, str],
-            tuple[float, pd.DataFrame, str, list[tuple[str, str, str]], list[list]],
+            tuple[float, Any, str, list[tuple[str, str, str]], list[list]],
         ] = {}
         self._spa_cache_ttl_s = 15.0
         try:
@@ -81,7 +81,7 @@ class DashboardApp(ft.Container):
         except Exception:
             self._spa_facade = None
 
-        self.spa_df: pd.DataFrame | None = None
+        self.spa_df: Any | None = None
         self.sidebar = Sidebar()
         self.metrics_table = MetricsTable(width=550)
         # wire up stops_table so parent can react to row double-tap

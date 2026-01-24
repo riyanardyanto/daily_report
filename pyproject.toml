@@ -3,16 +3,13 @@ name = "daily-report"
 version = "0.1.0"
 description = "Aplikasi untuk generate report dari data web (SPA)"
 readme = "README.md"
-requires-python = ">=3.9"
-authors = [
-    { name = "Riyan Ardyanto", email = "riyanardyanto@gmail.com" }
-]
+requires-python = ">=3.9,<3.14"
+authors = [{ name = "Riyan Ardyanto", email = "riyanardyanto@gmail.com" }]
 dependencies = [
+  "beautifulsoup4>=4.14.3",
   "flet==0.28.3",
   "httpx>=0.28.1",
   "httpx-ntlm>=1.4.0",
-  "lxml>=6.0.2",
-  "pandas>=2.3.3",
   "pillow>=11.3.0",
   "pip>=25.3",
   "qrcode>=7.4.2",
@@ -39,17 +36,13 @@ copyright = "Copyright (C) 2025 by Flet"
 path = "src"
 
 [project.optional-dependencies]
-dev = [
-  "flet[all]==0.28.3"
-]
+dev = ["flet[all]==0.28.3"]
 
 [tool.poetry]
 package-mode = false
 
 [tool.poetry.group.dev.dependencies]
-flet = {extras = ["all"], version = "0.28.3"}
+flet = { extras = ["all"], version = "0.28.3" }
 
 [dependency-groups]
-dev = [
-    "pyinstaller>=6.17.0",
-]
+dev = ["pyinstaller>=6.17.0"]
