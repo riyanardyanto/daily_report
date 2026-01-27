@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import contextlib
 import csv
 import shutil
 import sqlite3
@@ -8,6 +9,7 @@ from pathlib import Path
 from typing import Any, Callable, Iterable
 
 from src.services.history_schema import HISTORY_FIELDNAMES, build_history_rows
+from src.services.network_safe_db import connect_network_safe, file_lock_context
 
 
 def _is_malformed_sqlite_error(ex: BaseException) -> bool:
@@ -35,34 +37,34 @@ def _cleanup_wal_sidecars(db_path: Path) -> None:
         return
 
 
-def _configure_connection(conn: sqlite3.Connection) -> None:
-    """Configure SQLite connection.
+@contextlib.contextmanager
+def _connect(db_path: Path, *, for_write: bool = False):
+    """Open a network-safer SQLite connection.
 
-    NETWORK SAFETY FIXES:
-    - DISABLE WAL mode (causes corruption on network drives)
-    - Use DELETE journal mode (safe for SMB/CIFS)
-    - FULL synchronous for data integrity
-    - Increased timeout for network latency
+    When writing (for_write=True), also takes a simple file lock to reduce
+    concurrent writers on shared folders.
     """
-    conn.execute("PRAGMA foreign_keys = ON")
 
-    # CRITICAL: WAL mode CORRUPTS on network drives!
-    # WAL requires shared memory which is unreliable on SMB/CIFS
-    conn.execute("PRAGMA journal_mode = DELETE")  # Changed from WAL
-
-    # FULL synchronous for data integrity on network
-    conn.execute("PRAGMA synchronous = FULL")  # Changed from NORMAL
-
-    conn.execute("PRAGMA temp_store = MEMORY")
-
-    # Drastically increase timeout for network latency
-    conn.execute("PRAGMA busy_timeout = 30000")  # 30s (was 3s)
-
-
-def _connect(db_path: Path) -> sqlite3.Connection:
-    conn = sqlite3.connect(Path(db_path))
-    _configure_connection(conn)
-    return conn
+    db_path = Path(db_path)
+    if for_write:
+        with file_lock_context(db_path, timeout=30.0):
+            conn = connect_network_safe(db_path)
+            try:
+                yield conn
+            finally:
+                try:
+                    conn.close()
+                except Exception:
+                    pass
+    else:
+        conn = connect_network_safe(db_path)
+        try:
+            yield conn
+        finally:
+            try:
+                conn.close()
+            except Exception:
+                pass
 
 
 def _create_schema(conn: sqlite3.Connection) -> None:
@@ -141,12 +143,12 @@ def ensure_history_db(db_path: Path) -> None:
     db_path.parent.mkdir(parents=True, exist_ok=True)
 
     try:
-        with _connect(db_path) as conn:
+        with _connect(db_path, for_write=True) as conn:
             _create_schema(conn)
     except sqlite3.DatabaseError as ex:
         if _is_malformed_sqlite_error(ex):
             _restore_or_rollover_corrupt_db(db_path)
-            with _connect(db_path) as conn:
+            with _connect(db_path, for_write=True) as conn:
                 _create_schema(conn)
             return
         raise
@@ -181,7 +183,7 @@ def append_history_rows(db_path: Path, rows: Iterable[dict[str, Any]]) -> int:
     placeholders = ",".join(["?"] * len(HISTORY_FIELDNAMES))
     values = [tuple(r[c] for c in HISTORY_FIELDNAMES) for r in normalized]
 
-    with _connect(db_path) as conn:
+    with _connect(db_path, for_write=True) as conn:
         conn.execute("BEGIN")
         try:
             conn.executemany(
@@ -260,46 +262,6 @@ def save_report_history_sqlite(
         return True, f"Report saved: {db_path} (+{appended} rows)"
     except Exception as ex:
         return False, f"Failed to save report to SQLite: {ex}"
-
-
-def migrate_history_csv_to_sqlite(
-    *,
-    csv_path: Path,
-    db_path: Path,
-) -> tuple[bool, str]:
-    """One-time migration from history.csv to history.db.
-
-    Idempotent: uses a UNIQUE index and INSERT OR IGNORE to avoid duplicates.
-    """
-
-    csv_path = Path(csv_path)
-    db_path = Path(db_path)
-
-    if not csv_path.exists():
-        # Nothing to migrate.
-        ensure_history_db(db_path)
-        return True, "No CSV to migrate"
-
-    ensure_history_db(db_path)
-
-    try:
-        with csv_path.open("r", newline="", encoding="utf-8-sig") as f:
-            reader = csv.DictReader(f)
-            fieldnames = list(reader.fieldnames or [])
-            if not fieldnames:
-                return False, f"CSV has no header: {csv_path}"
-
-            rows: list[dict[str, Any]] = []
-            for row in reader:
-                rows.append(row or {})
-
-        inserted = append_history_rows(db_path, rows)
-        return (
-            True,
-            f"Migrated CSV -> SQLite: {csv_path} -> {db_path} ({inserted} rows processed)",
-        )
-    except Exception as ex:
-        return False, f"Migration failed: {ex}"
 
 
 def read_history_tail(

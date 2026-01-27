@@ -150,27 +150,11 @@ Hasil build biasanya ada di folder `dist/` dengan nama `Daily Report.exe`.
 
 Jika Anda punya file `history.csv` (misalnya dari komputer lain) dan ingin menambahkan datanya ke `history.db`, ada 2 cara:
 
-### Opsi A: dari UI (History dialog)
+Saat ini fitur **Load from CSV** dan script CLI helper untuk import CSV sudah dihapus (tidak dipakai lagi).
 
-Di dialog **History**, klik tombol **Load from CSV**, pilih file `.csv`, lalu aplikasi akan meng-import ke `history.db` dan me-refresh tabel.
+Jika Anda butuh menggabungkan history antar komputer, gunakan mekanisme sync yang ada (History dialog akan melakukan sync), atau beritahu saya jika ingin saya buatkan kembali helper import CSV yang sederhana.
 
-### Opsi B: lewat CLI helper
 
-Jalankan:
-
-```powershell
-uv run python tools\import_history_csv_to_db.py "D:\path\ke\history.csv"
-```
-
-Jika DB tujuan ingin berbeda:
-
-```powershell
-uv run python tools\import_history_csv_to_db.py "D:\path\ke\history.csv" --db "D:\path\ke\history.db"
-```
-
-Catatan:
-- CSV harus punya header.
-- Baris duplikat akan diabaikan (idempotent) berdasarkan kombinasi `(save_id, card_index, detail_index, action_index)`.
 
 ## Struktur Folder Penting
 

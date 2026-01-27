@@ -1,5 +1,6 @@
 import csv
 import os
+import shutil
 import sys
 from pathlib import Path
 
@@ -77,16 +78,35 @@ def get_data_app_dir(folder_name: str = "data_app", create: bool = True) -> Path
     else:
         portable_dir = get_script_folder() / folder_name
 
+        # In frozen deployments, keep non-DB operational folders next to the exe.
+        # This matches user expectations for a “portable” layout:
+        #   <exe_dir>/data_app/log
+        #   <exe_dir>/data_app/settings
+        #   <exe_dir>/data_app/targets
+        try:
+            folder_key = str(folder_name or "").replace("\\", "/").strip().lower()
+        except Exception:
+            folder_key = str(folder_name or "").strip().lower()
+
+        portable_prefixes = (
+            "data_app/log",
+            "data_app/settings",
+            "data_app/targets",
+        )
+
         if getattr(sys, "frozen", False):
-            # Backward compatibility: if a portable folder already exists next
-            # to the exe (and has any contents), keep using it.
-            try:
-                if portable_dir.exists() and any(portable_dir.iterdir()):
-                    data_dir = portable_dir
-                else:
+            if any(folder_key.startswith(p) for p in portable_prefixes):
+                data_dir = portable_dir
+            else:
+                # Backward compatibility: if a portable folder already exists next
+                # to the exe (and has any contents), keep using it.
+                try:
+                    if portable_dir.exists() and any(portable_dir.iterdir()):
+                        data_dir = portable_dir
+                    else:
+                        data_dir = _user_data_root() / folder_name
+                except Exception:
                     data_dir = _user_data_root() / folder_name
-            except Exception:
-                data_dir = _user_data_root() / folder_name
         else:
             data_dir = portable_dir
 
@@ -98,6 +118,36 @@ def get_data_app_dir(folder_name: str = "data_app", create: bool = True) -> Path
 def data_app_path(*parts: str, folder_name: str = "data_app") -> Path:
     """Convenience helper: build a path inside the data directory."""
     return get_data_app_dir(folder_name=folder_name, create=True).joinpath(*parts)
+
+
+def ensure_portable_targets_seeded() -> None:
+    """Ensure data_app/targets exists next to the exe and seed CSVs if available.
+
+    For one-file PyInstaller builds, bundled data lives under sys._MEIPASS.
+    We copy target CSVs to the portable folder only if they don't exist yet.
+    """
+
+    if not getattr(sys, "frozen", False):
+        return
+
+    try:
+        dst_dir = get_script_folder() / "data_app" / "targets"
+        dst_dir.mkdir(parents=True, exist_ok=True)
+
+        src_dir = resource_path("data_app/targets")
+        if not src_dir.exists() or not src_dir.is_dir():
+            return
+
+        for src_file in src_dir.glob("*.csv"):
+            dst_file = dst_dir / src_file.name
+            if dst_file.exists():
+                continue
+            try:
+                shutil.copy2(src_file, dst_file)
+            except Exception:
+                pass
+    except Exception:
+        pass
 
 
 def load_targets_csv(
@@ -252,7 +302,8 @@ def load_settings_options(
         (settings_path, options, created_template, error_message)
     """
 
-    settings_path = data_app_path("settings", filename)
+    # Store settings next to the exe under data_app/settings (portable layout).
+    settings_path = data_app_path(filename, folder_name="data_app/settings")
     defaults_list = [str(x).strip() for x in (defaults or []) if str(x).strip()]
 
     if not settings_path.exists():
@@ -305,7 +356,8 @@ def save_settings_options(
         (settings_path, ok, error_message)
     """
 
-    settings_path = data_app_path("settings", filename)
+    # Store settings next to the exe under data_app/settings (portable layout).
+    settings_path = data_app_path(filename, folder_name="data_app/settings")
     try:
         settings_path.parent.mkdir(parents=True, exist_ok=True)
         cleaned = [str(x).strip() for x in (options or []) if str(x).strip()]

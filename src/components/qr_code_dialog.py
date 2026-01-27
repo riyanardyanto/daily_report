@@ -10,7 +10,7 @@ from collections import OrderedDict
 import flet as ft
 
 from src.services.config_service import get_ui_config
-from src.utils.theme import ON_COLOR, SECONDARY
+from src.utils.theme import DANGER, ON_COLOR
 from src.utils.ui_helpers import open_dialog
 
 _QR_CACHE_LOCK = threading.Lock()
@@ -137,7 +137,7 @@ class QrCodeDialog:
                             "Close",
                             on_click=_close_dialog,
                             color=ON_COLOR,
-                            bgcolor=SECONDARY,
+                            bgcolor=DANGER,
                         )
                     ],
                     alignment=ft.MainAxisAlignment.END,

@@ -310,4 +310,3 @@ class SpaFacade:
             except Exception:
                 pass
             return SpaResponse(df=None, rng_str="", metrics_rows=[], stops_rows=[])
-            return SpaResponse(df=None, rng_str="", metrics_rows=[], stops_rows=[])

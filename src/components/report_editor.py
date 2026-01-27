@@ -1,4 +1,8 @@
 import asyncio
+import json
+import os
+import re
+from datetime import datetime
 
 import flet as ft
 
@@ -8,7 +12,7 @@ from src.components.report_list_view import ReportList
 from src.components.target_editor import TargetEditorDialog
 from src.services.history_db_adapter import save_report_history_sqlite
 from src.utils.helpers import data_app_path, load_settings_options
-from src.utils.theme import DANGER, INFO, ON_COLOR, PRIMARY, SECONDARY, SUCCESS, WARNING
+from src.utils.theme import DANGER, INFO, ON_COLOR, PRIMARY, SUCCESS, WARNING
 from src.utils.ui_helpers import open_dialog, resolve_page, snack
 
 
@@ -94,6 +98,15 @@ class ReportEditor(ft.Container):
                                 on_click=self._on_add_card,
                             ),
                             ft.IconButton(
+                                icon=ft.Icons.RESTORE,
+                                icon_color=ON_COLOR,
+                                bgcolor=INFO,
+                                icon_size=18,
+                                tooltip="Restore last cleared",
+                                on_click=self._on_restore_last,
+                                disabled=True,
+                            ),
+                            ft.IconButton(
                                 icon=ft.Icons.CLEAR,
                                 icon_color=ON_COLOR,
                                 bgcolor=DANGER,
@@ -113,6 +126,19 @@ class ReportEditor(ft.Container):
         )
 
         self.report_list = ReportList(expand=True)
+        self._pending_draft_task = None
+
+        # Autosave draft (so it survives accidental close/restart)
+        try:
+            self.report_list.set_on_dirty(self._schedule_persist_draft)
+        except Exception:
+            pass
+
+        # Keep a handle to the Restore button (header -> Row[1] -> controls[1])
+        try:
+            self._restore_btn = header.content.controls[1].controls[1]
+        except Exception:
+            self._restore_btn = None
 
         super().__init__(
             content=ft.Column(
@@ -127,6 +153,431 @@ class ReportEditor(ft.Container):
             **kwargs,
         )
 
+    def did_mount(self):
+        # Called when added to the page; page is available here.
+        try:
+            self._load_draft_from_disk()
+        except Exception:
+            pass
+        try:
+            self._sync_restore_enabled(getattr(self, "page", None))
+        except Exception:
+            pass
+
+    def _draft_store_path(self):
+        # Store in settings (portable-friendly in frozen builds).
+        # Draft files are keyed by (functional location, link_up) so they don't
+        # overwrite across different areas. We also add a user/pc suffix to avoid
+        # collisions when settings folder is shared.
+
+        def _safe_part(v: str, *, max_len: int = 40) -> str:
+            try:
+                s = str(v or "").strip().lower()
+            except Exception:
+                s = ""
+            if not s:
+                return "na"
+            s = re.sub(r"\s+", "_", s)
+            s = re.sub(r"[^a-z0-9._-]", "_", s)
+            s = re.sub(r"_+", "_", s).strip("_")
+            if not s:
+                return "na"
+            if len(s) > max_len:
+                s = s[:max_len]
+            return s
+
+        link_up = "LU22"
+        try:
+            if callable(getattr(self, "_get_link_up_cb", None)):
+                link_up = str(self._get_link_up_cb() or "LU22")
+        except Exception:
+            link_up = "LU22"
+
+        func_location = "Packer"
+        try:
+            if callable(getattr(self, "_get_func_location_cb", None)):
+                func_location = str(self._get_func_location_cb() or "Packer")
+        except Exception:
+            func_location = "Packer"
+
+        key = "_".join(
+            [
+                _safe_part(func_location, max_len=30),
+                _safe_part(link_up, max_len=20),
+            ]
+        )
+
+        # Add a per-user / per-PC suffix to avoid collisions in shared folders.
+        try:
+            username = (
+                str(os.environ.get("USERNAME") or os.environ.get("USER") or "")
+                .strip()
+                .lower()
+            )
+        except Exception:
+            username = ""
+        try:
+            computername = str(os.environ.get("COMPUTERNAME") or "").strip().lower()
+        except Exception:
+            computername = ""
+
+        suffix = "__".join(
+            [
+                f"user-{_safe_part(username, max_len=24)}",
+                f"pc-{_safe_part(computername, max_len=24)}",
+            ]
+        )
+
+        filename = f"draft_report_{key}__{suffix}.json"
+        return data_app_path(filename, folder_name="data_app/history/drafts")
+
+    def _persist_draft_now(self) -> None:
+        try:
+            draft = self.report_list.snapshot_state()
+        except Exception:
+            draft = []
+
+        try:
+            last_cleared = self.report_list.get_last_snapshot() or []
+        except Exception:
+            last_cleared = []
+
+        store_path = self._draft_store_path()
+
+        # If nothing to persist, delete stale file.
+        if not draft and not last_cleared:
+            try:
+                if store_path.exists():
+                    store_path.unlink()
+            except Exception:
+                pass
+
+            # Also cleanup older drafts for the same context.
+            try:
+                legacy_keyed = self._draft_store_path_legacy_no_suffix()
+                if legacy_keyed is not None and legacy_keyed.exists():
+                    legacy_keyed.unlink()
+            except Exception:
+                pass
+            try:
+                for p in self._legacy_shift_date_draft_paths_for_context():
+                    try:
+                        if p.exists():
+                            p.unlink()
+                    except Exception:
+                        pass
+            except Exception:
+                pass
+            return
+
+        payload = {
+            "version": 1,
+            "updated_at": datetime.now().isoformat(timespec="seconds"),
+            "draft": draft,
+            "last_cleared": last_cleared,
+        }
+
+        try:
+            store_path.write_text(
+                json.dumps(payload, ensure_ascii=False, indent=2),
+                encoding="utf-8",
+            )
+        except Exception:
+            # Never crash UI for draft persistence
+            return
+
+        # Cleanup older no-suffix keyed draft for the same context.
+        try:
+            legacy_keyed = self._draft_store_path_legacy_no_suffix()
+            if legacy_keyed is not None and legacy_keyed.exists():
+                legacy_keyed.unlink()
+        except Exception:
+            pass
+
+        # Cleanup older shift/date-based drafts for the same context.
+        try:
+            for p in self._legacy_shift_date_draft_paths_for_context():
+                try:
+                    if p != store_path and p.exists():
+                        p.unlink()
+                except Exception:
+                    pass
+        except Exception:
+            pass
+
+    def _schedule_persist_draft(self) -> None:
+        """Debounced draft save (safe to call very frequently)."""
+        try:
+            prev = getattr(self, "_pending_draft_task", None)
+            if prev is not None and hasattr(prev, "cancel"):
+                try:
+                    prev.cancel()
+                except Exception:
+                    pass
+        except Exception:
+            pass
+
+        page = getattr(self, "page", None)
+
+        async def _runner():
+            try:
+                await asyncio.sleep(0.4)
+            except Exception:
+                return
+            self._persist_draft_now()
+            try:
+                self._sync_restore_enabled(page)
+            except Exception:
+                pass
+
+        try:
+            if page is not None and callable(getattr(page, "run_task", None)):
+                self._pending_draft_task = page.run_task(_runner)
+            else:
+                # Fallback: best-effort immediate write
+                self._persist_draft_now()
+        except Exception:
+            self._persist_draft_now()
+
+    def _clear_draft_storage(self) -> None:
+        try:
+            p = self._draft_store_path()
+            if p.exists():
+                p.unlink()
+        except Exception:
+            return
+
+        # Backward-compat: remove older no-suffix keyed draft for the same context.
+        try:
+            p2 = self._draft_store_path_legacy_no_suffix()
+            if p2 is not None and p2.exists():
+                p2.unlink()
+        except Exception:
+            pass
+
+        # Backward-compat: remove older shift/date-based drafts for the same context.
+        try:
+            for p3 in self._legacy_shift_date_draft_paths_for_context():
+                try:
+                    if p3.exists():
+                        p3.unlink()
+                except Exception:
+                    pass
+        except Exception:
+            pass
+
+        # Backward-compat: remove legacy global file if present.
+        try:
+            legacy = data_app_path("draft_report.json", folder_name="data_app/settings")
+            if legacy.exists():
+                legacy.unlink()
+        except Exception:
+            return
+
+    def _load_draft_from_disk(self) -> None:
+        page = getattr(self, "page", None)
+
+        target_path = self._draft_store_path()
+        store_path = target_path
+        loaded_from = target_path
+
+        # Backward-compat: older keyed drafts without user/pc suffix.
+        legacy_keyed = self._draft_store_path_legacy_no_suffix()
+        if (
+            not store_path.exists()
+            and legacy_keyed is not None
+            and legacy_keyed.exists()
+        ):
+            store_path = legacy_keyed
+            loaded_from = legacy_keyed
+
+        # Backward-compat: older drafts keyed by shift/date (previous versions).
+        if not store_path.exists():
+            legacy_shift_date = None
+            try:
+                legacy_paths = self._legacy_shift_date_draft_paths_for_context()
+                if legacy_paths:
+                    legacy_shift_date = legacy_paths[0]
+            except Exception:
+                legacy_shift_date = None
+            if legacy_shift_date is not None and legacy_shift_date.exists():
+                store_path = legacy_shift_date
+                loaded_from = legacy_shift_date
+
+        # Backward-compat: if keyed draft doesn't exist, try legacy.
+        legacy_path = data_app_path(
+            "draft_report.json", folder_name="data_app/settings"
+        )
+        if not store_path.exists() and legacy_path.exists():
+            store_path = legacy_path
+            loaded_from = legacy_path
+
+        if not store_path.exists():
+            return
+
+        try:
+            raw = store_path.read_text(encoding="utf-8")
+            data = json.loads(raw or "{}")
+        except Exception:
+            return
+
+        draft = data.get("draft")
+        last_cleared = data.get("last_cleared")
+
+        try:
+            if isinstance(last_cleared, list):
+                self.report_list.set_last_snapshot(last_cleared)
+        except Exception:
+            pass
+
+        # Only auto-restore draft when the editor is empty.
+        try:
+            has_cards = bool(list(getattr(self.report_list, "controls", None) or []))
+        except Exception:
+            has_cards = False
+
+        if (not has_cards) and isinstance(draft, list) and draft:
+            # Avoid triggering multiple saves while initializing.
+            try:
+                self.report_list.set_on_dirty(None)
+            except Exception:
+                pass
+
+            try:
+                self.report_list.load_state(draft, replace_current=True)
+            except Exception:
+                pass
+            finally:
+                try:
+                    self.report_list.set_on_dirty(self._schedule_persist_draft)
+                except Exception:
+                    pass
+
+            try:
+                if page is not None:
+                    snack(page, "Restored unsaved draft", kind="warning")
+            except Exception:
+                pass
+
+        # Always migrate legacy sources (even if draft is empty but last_cleared exists).
+        try:
+            if loaded_from != target_path:
+                self._persist_draft_now()
+                try:
+                    loaded_from.unlink()
+                except Exception:
+                    pass
+        except Exception:
+            pass
+
+    def _draft_store_path_legacy_no_suffix(self):
+        """Return the previous keyed-draft path (without user/pc suffix)."""
+        # Keep the implementation in sync with _draft_store_path(), minus suffix.
+
+        def _safe_part(v: str, *, max_len: int = 40) -> str:
+            try:
+                s = str(v or "").strip().lower()
+            except Exception:
+                s = ""
+            if not s:
+                return "na"
+            s = re.sub(r"\s+", "_", s)
+            s = re.sub(r"[^a-z0-9._-]", "_", s)
+            s = re.sub(r"_+", "_", s).strip("_")
+            if not s:
+                return "na"
+            if len(s) > max_len:
+                s = s[:max_len]
+            return s
+
+        link_up = "LU22"
+        try:
+            if callable(getattr(self, "_get_link_up_cb", None)):
+                link_up = str(self._get_link_up_cb() or "LU22")
+        except Exception:
+            link_up = "LU22"
+
+        func_location = "Packer"
+        try:
+            if callable(getattr(self, "_get_func_location_cb", None)):
+                func_location = str(self._get_func_location_cb() or "Packer")
+        except Exception:
+            func_location = "Packer"
+
+        key = "_".join(
+            [
+                _safe_part(func_location, max_len=30),
+                _safe_part(link_up, max_len=20),
+            ]
+        )
+        filename = f"draft_report_{key}.json"
+        return data_app_path(filename, folder_name="data_app/history/drafts")
+
+    def _legacy_shift_date_draft_paths_for_context(self) -> list:
+        """Find older shift/date keyed draft files for the current (fl, link_up) context."""
+
+        def _safe_part(v: str, *, max_len: int = 40) -> str:
+            try:
+                s = str(v or "").strip().lower()
+            except Exception:
+                s = ""
+            if not s:
+                return "na"
+            s = re.sub(r"\s+", "_", s)
+            s = re.sub(r"[^a-z0-9._-]", "_", s)
+            s = re.sub(r"_+", "_", s).strip("_")
+            if not s:
+                return "na"
+            if len(s) > max_len:
+                s = s[:max_len]
+            return s
+
+        link_up = "LU22"
+        try:
+            if callable(getattr(self, "_get_link_up_cb", None)):
+                link_up = str(self._get_link_up_cb() or "LU22")
+        except Exception:
+            link_up = "LU22"
+
+        func_location = "Packer"
+        try:
+            if callable(getattr(self, "_get_func_location_cb", None)):
+                func_location = str(self._get_func_location_cb() or "Packer")
+        except Exception:
+            func_location = "Packer"
+
+        lu = _safe_part(link_up, max_len=40)
+        fl = _safe_part(func_location, max_len=40)
+
+        try:
+            drafts_dir = data_app_path(
+                "_", folder_name="data_app/history/drafts"
+            ).parent
+        except Exception:
+            return []
+
+        needle = f"__lu-{lu}__fl-{fl}__date-"
+        found = []
+        try:
+            for p in drafts_dir.glob("draft_report__shift-*__lu-*__fl-*__date-*.json"):
+                try:
+                    name = str(getattr(p, "name", "") or "")
+                    if needle in name:
+                        found.append(p)
+                except Exception:
+                    continue
+        except Exception:
+            return []
+
+        def _mtime(path):
+            try:
+                return path.stat().st_mtime
+            except Exception:
+                return 0
+
+        found.sort(key=_mtime, reverse=True)
+        return found
+
     def _notify_history_saved(self, page: ft.Page | None) -> None:
         cb = getattr(self, "_on_history_saved_cb", None)
         if not callable(cb):
@@ -135,6 +586,104 @@ class ReportEditor(ft.Container):
             cb(page)
         except Exception:
             return
+
+    def _sync_restore_enabled(self, page: ft.Page | None = None) -> None:
+        btn = getattr(self, "_restore_btn", None)
+        if btn is None:
+            return
+        try:
+            btn.disabled = not bool(
+                getattr(self.report_list, "can_restore_last", lambda: False)()
+            )
+            try:
+                btn.update()
+                return
+            except Exception:
+                pass
+            if page is not None:
+                page.update()
+        except Exception:
+            return
+
+    def _on_restore_last(self, e):
+        page = resolve_page(e, fallback=getattr(self, "page", None))
+        if page is None:
+            return
+
+        if not self.report_list.can_restore_last():
+            snack(page, "Nothing to restore", kind="warning")
+            self._sync_restore_enabled(page)
+            return
+
+        cards = list(getattr(self.report_list, "controls", None) or [])
+
+        def _do_restore():
+            ok = self.report_list.restore_last(replace_current=True)
+            self._sync_restore_enabled(page)
+            try:
+                self._persist_draft_now()
+            except Exception:
+                pass
+            snack(
+                page,
+                "Restored last cleared cards" if ok else "Restore failed",
+                kind="success" if ok else "error",
+            )
+
+        if cards:
+
+            def _close_dialog(_e=None):
+                try:
+                    dlg.open = False
+                    page.update()
+                except Exception:
+                    pass
+
+            def _confirm(_e=None):
+                try:
+                    _do_restore()
+                finally:
+                    _close_dialog()
+
+            dlg = ft.AlertDialog(
+                modal=True,
+                title=ft.Text("Confirm"),
+                content=ft.Container(
+                    content=ft.Text(
+                        "Replace current cards with the last cleared list?"
+                    ),
+                    padding=ft.padding.all(12),
+                    bgcolor=ft.Colors.WHITE,
+                    border=ft.border.all(1, ft.Colors.BLACK12),
+                    border_radius=10,
+                ),
+                actions=[
+                    ft.Row(
+                        controls=[
+                            ft.ElevatedButton(
+                                "Cancel",
+                                on_click=_close_dialog,
+                                color=ON_COLOR,
+                                bgcolor=DANGER,
+                            ),
+                            ft.ElevatedButton(
+                                "Restore",
+                                on_click=_confirm,
+                                color=ON_COLOR,
+                                bgcolor=INFO,
+                            ),
+                        ],
+                        alignment=ft.MainAxisAlignment.END,
+                        spacing=8,
+                    )
+                ],
+                actions_alignment=ft.MainAxisAlignment.END,
+                on_dismiss=lambda _e: _close_dialog(),
+            )
+            open_dialog(page, dlg)
+            return
+
+        _do_restore()
 
     def _on_show_history_table(self, e):
         page = resolve_page(e, fallback=getattr(self, "page", None))
@@ -259,6 +808,12 @@ class ReportEditor(ft.Container):
                             kind = "error"
                         snack(page, msg, kind=kind)
                         if ok:
+                            try:
+                                self.report_list.discard_last_snapshot()
+                                self._sync_restore_enabled(page)
+                                self._clear_draft_storage()
+                            except Exception:
+                                pass
                             self._notify_history_saved(page)
                     except Exception as ex:
                         snack(page, f"Failed to save report: {ex}", kind="error")
@@ -288,6 +843,12 @@ class ReportEditor(ft.Container):
                         kind = "error"
                     snack(page, msg, kind=kind)
                     if ok:
+                        try:
+                            self.report_list.discard_last_snapshot()
+                            self._sync_restore_enabled(page)
+                            self._clear_draft_storage()
+                        except Exception:
+                            pass
                         self._notify_history_saved(page)
             except Exception as ex:
                 snack(page, f"Failed to save report: {ex}", kind="error")
@@ -331,10 +892,11 @@ class ReportEditor(ft.Container):
             actions=[
                 ft.Row(
                     controls=[
-                        ft.TextButton(
+                        ft.ElevatedButton(
                             "Cancel",
                             on_click=_close_dialog,
-                            style=ft.ButtonStyle(color=SECONDARY),
+                            color=ON_COLOR,
+                            bgcolor=DANGER,
                         ),
                         ft.ElevatedButton(
                             "Save",
@@ -380,8 +942,12 @@ class ReportEditor(ft.Container):
 
         def _confirm(_e=None):
             try:
-                self.report_list.controls.clear()
-                self.report_list.update()
+                self.report_list.clear_all(backup=True)
+                self._sync_restore_enabled(page)
+                try:
+                    self._persist_draft_now()
+                except Exception:
+                    pass
             finally:
                 _close_dialog()
 
@@ -398,10 +964,11 @@ class ReportEditor(ft.Container):
             actions=[
                 ft.Row(
                     controls=[
-                        ft.TextButton(
+                        ft.ElevatedButton(
                             "Cancel",
                             on_click=_close_dialog,
-                            style=ft.ButtonStyle(color=SECONDARY),
+                            color=ON_COLOR,
+                            bgcolor=DANGER,
                         ),
                         ft.ElevatedButton(
                             "Clear",

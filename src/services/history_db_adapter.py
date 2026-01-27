@@ -41,6 +41,73 @@ _sync_service: LocalSyncDbService | None = None
 _auto_sync_enabled = True  # Auto sync setelah write
 
 
+def _history_storage_mode() -> str:
+    """Return active history storage mode.
+
+    Values:
+      - "local_sync" (default)
+      - "shared_sqlite"
+    """
+
+    # Fast path env var (useful for deployments)
+    env_mode = str(os.environ.get("DAILY_REPORT_HISTORY_MODE", "") or "").strip()
+    if env_mode:
+        m = env_mode.strip().lower()
+        return m if m in ("local_sync", "shared_sqlite") else "local_sync"
+
+    try:
+        from src.services.config_service import get_history_storage_config
+
+        cfg, _err = get_history_storage_config()
+        m = str(getattr(cfg, "mode", "local_sync") or "local_sync").strip().lower()
+        return m if m in ("local_sync", "shared_sqlite") else "local_sync"
+    except Exception:
+        return "local_sync"
+
+
+def _shared_db_path_from_config_or_env() -> str:
+    env_path = str(os.environ.get("DAILY_REPORT_SHARED_DB_PATH", "") or "").strip()
+    if env_path:
+        return env_path
+    try:
+        from src.services.config_service import get_history_storage_config
+
+        cfg, _err = get_history_storage_config()
+        return str(getattr(cfg, "shared_db_path", "") or "").strip()
+    except Exception:
+        return ""
+
+
+def _resolve_db_path(db_path: Path) -> Path:
+    """Resolve effective db_path based on active mode.
+
+    - local_sync: db_path argument is ignored (kept for compatibility)
+    - shared_sqlite: uses env/config shared_db_path if set; otherwise uses passed db_path
+    """
+
+    if _history_storage_mode() != "shared_sqlite":
+        return Path(db_path)
+
+    raw = _shared_db_path_from_config_or_env()
+    if raw:
+        try:
+            p = Path(raw)
+            if not p.is_absolute():
+                p = Path.cwd() / p
+            p.parent.mkdir(parents=True, exist_ok=True)
+            return p
+        except Exception:
+            pass
+
+    # Fallback to caller-provided db_path for backward compatibility.
+    try:
+        p = Path(db_path)
+        p.parent.mkdir(parents=True, exist_ok=True)
+        return p
+    except Exception:
+        return Path(db_path)
+
+
 def _user_local_root_dir() -> Path:
     """Per-user local root directory (independent of portable/shared data_app).
 
@@ -192,17 +259,6 @@ def _get_sync_service() -> LocalSyncDbService:
     return _sync_service
 
 
-def set_auto_sync(enabled: bool) -> None:
-    """
-    Enable/disable auto sync setelah write operations.
-
-    Args:
-        enabled: True untuk auto export setelah append_history_rows
-    """
-    global _auto_sync_enabled
-    _auto_sync_enabled = enabled
-
-
 def manual_sync() -> tuple[int, int]:
     """
     Trigger manual sync (import + export).
@@ -210,6 +266,9 @@ def manual_sync() -> tuple[int, int]:
     Returns:
         (imported_count, exported_count)
     """
+    if _history_storage_mode() == "shared_sqlite":
+        return 0, 0
+
     service = _get_sync_service()
     return service.sync_bidirectional()
 
@@ -220,6 +279,9 @@ def publish_all_history_to_sync() -> tuple[bool, str]:
     Use this when onboarding a new PC that has an empty local DB.
     The new PC will import the produced `fullsync_*.json` on next sync.
     """
+
+    if _history_storage_mode() == "shared_sqlite":
+        return False, "Shared SQLite mode: JSON sync is disabled"
 
     try:
         service = _get_sync_service()
@@ -238,6 +300,9 @@ def cleanup_sync_files(
 
     Conservative behavior: never deletes; moves old files to `archive/`.
     """
+
+    if _history_storage_mode() == "shared_sqlite":
+        return False, "Shared SQLite mode: JSON sync cleanup not applicable"
 
     try:
         service = _get_sync_service()
@@ -333,6 +398,11 @@ def count_history_rows(db_path: Path) -> int:
     NOTE: db_path parameter diabaikan (compatibility).
     Sekarang menggunakan local database.
     """
+    if _history_storage_mode() == "shared_sqlite":
+        from src.services.history_db_service import count_history_rows as _count
+
+        return _count(_resolve_db_path(db_path))
+
     service = _get_sync_service()
     return service.count_rows()
 
@@ -347,6 +417,11 @@ def append_history_rows(db_path: Path, rows: Iterable[dict[str, Any]]) -> int:
     Returns:
         Jumlah rows yang di-insert
     """
+    if _history_storage_mode() == "shared_sqlite":
+        from src.services.history_db_service import append_history_rows as _append
+
+        return _append(_resolve_db_path(db_path), rows)
+
     service = _get_sync_service()
     count = service.append_rows(rows)
 
@@ -368,6 +443,11 @@ def read_history_tail(
     limit: int,
 ) -> tuple[list[str], int, list[dict[str, str]]]:
     """Return (fieldnames, total_rows, tail_rows) like history_db_service."""
+    if _history_storage_mode() == "shared_sqlite":
+        from src.services.history_db_service import read_history_tail as _read
+
+        return _read(db_path=_resolve_db_path(db_path), limit=limit)
+
     service = _get_sync_service()
     total = int(service.count_rows() or 0)
     lim = int(limit or 0) or 500
@@ -386,6 +466,16 @@ def read_history_filtered_tail(
     limit: int,
 ) -> tuple[int, list[dict[str, str]]]:
     """Return (matches_total, last_matches) like history_db_service."""
+    if _history_storage_mode() == "shared_sqlite":
+        from src.services.history_db_service import read_history_filtered_tail as _read
+
+        return _read(
+            db_path=_resolve_db_path(db_path),
+            q=q,
+            fieldnames=fieldnames,
+            limit=limit,
+        )
+
     q_s = str(q or "").strip().lower()
     if not q_s:
         return 0, []
@@ -416,6 +506,18 @@ def read_history_filtered_tail_no_count(
     limit: int,
 ) -> list[dict[str, str]]:
     """Return last_matches without computing total matches."""
+    if _history_storage_mode() == "shared_sqlite":
+        from src.services.history_db_service import (
+            read_history_filtered_tail_no_count as _read,
+        )
+
+        return _read(
+            db_path=_resolve_db_path(db_path),
+            q=q,
+            fieldnames=fieldnames,
+            limit=limit,
+        )
+
     q_s = str(q or "").strip().lower()
     if not q_s:
         return []
@@ -446,6 +548,13 @@ def read_last_saved_user_date_shift(
 
     NOTE: db_path parameter diabaikan (compatibility).
     """
+    if _history_storage_mode() == "shared_sqlite":
+        from src.services.history_db_service import (
+            read_last_saved_user_date_shift as _read,
+        )
+
+        return _read(_resolve_db_path(db_path))
+
     service = _get_sync_service()
     rows = service.get_all_rows()
     if not rows:
@@ -479,6 +588,16 @@ def export_history_db_to_csv(
     Returns:
         (total_exported, matches_total)
     """
+    if _history_storage_mode() == "shared_sqlite":
+        from src.services.history_db_service import export_history_db_to_csv as _export
+
+        return _export(
+            db_path=_resolve_db_path(db_path),
+            export_path=export_path,
+            visible_fieldnames=visible_fieldnames,
+            q=q,
+        )
+
     export_path = Path(export_path)
     export_path.parent.mkdir(parents=True, exist_ok=True)
 
@@ -528,6 +647,21 @@ def save_report_history_sqlite(
 
     Matches the behavior/signature of history_db_service.save_report_history_sqlite.
     """
+    if _history_storage_mode() == "shared_sqlite":
+        from src.services.history_db_service import save_report_history_sqlite as _save
+
+        return _save(
+            db_path=_resolve_db_path(db_path),
+            cards=cards,
+            extract_issue=extract_issue,
+            extract_details=extract_details,
+            shift=shift,
+            link_up=link_up,
+            func_location=func_location,
+            date_field=date_field,
+            user=user,
+        )
+
     if not cards:
         return False, "No cards to save"
 
@@ -552,114 +686,3 @@ def save_report_history_sqlite(
         return True, f"Report saved (local cache) (+{appended} rows)"
     except Exception as ex:
         return False, f"Failed to save report to local history: {ex}"
-
-
-def migrate_history_csv_to_sqlite(
-    *,
-    csv_path: Path,
-    db_path: Path,
-) -> tuple[bool, str]:
-    """One-time migration from history.csv into the Local+Sync store."""
-    csv_path = Path(csv_path)
-    if not csv_path.exists():
-        return True, "No CSV to migrate"
-
-    try:
-        with csv_path.open("r", newline="", encoding="utf-8-sig") as f:
-            reader = csv.DictReader(f)
-            fieldnames = list(reader.fieldnames or [])
-            if not fieldnames:
-                return False, f"CSV has no header: {csv_path}"
-            rows: list[dict[str, Any]] = []
-            for row in reader:
-                rows.append(row or {})
-
-        inserted = append_history_rows(db_path, rows)
-        return (
-            True,
-            f"Migrated CSV -> local cache: {csv_path} ({inserted} rows processed)",
-        )
-    except Exception as ex:
-        return False, f"Migration failed: {ex}"
-
-
-# ==================== MIGRATION HELPERS ====================
-
-
-def migrate_from_shared_db(shared_db_path: Path) -> int:
-    """
-    Migrate data dari shared SQLite DB lama ke local + sync.
-
-    Gunakan sekali saat migrasi.
-
-    Returns:
-        Jumlah rows yang di-migrate
-    """
-    import sqlite3
-
-    if not shared_db_path.exists():
-        print(f"[Migration] Shared DB not found: {shared_db_path}")
-        return 0
-
-    # Read dari DB lama
-    conn = sqlite3.connect(shared_db_path)
-    conn.row_factory = sqlite3.Row
-
-    try:
-        cursor = conn.execute(
-            f"SELECT {','.join(HISTORY_FIELDNAMES)} FROM history_rows"
-        )
-        old_rows = [dict(row) for row in cursor.fetchall()]
-    finally:
-        conn.close()
-
-    if not old_rows:
-        print("[Migration] No data to migrate")
-        return 0
-
-    # Write ke local DB baru
-    service = _get_sync_service()
-    count = service.append_rows(old_rows)
-
-    # Export ke sync folder
-    sync_file = service.export_to_sync_folder()
-
-    print(f"[Migration] Migrated {count} rows")
-    if sync_file:
-        print(f"[Migration] Exported to {sync_file}")
-
-    return count
-
-
-def get_local_db_path() -> Path:
-    """Get path ke local database (for debugging/info)."""
-    service = _get_sync_service()
-    return service.local_db_path
-
-
-def get_sync_folder() -> Path:
-    """Get path ke sync folder (for debugging/info)."""
-    service = _get_sync_service()
-    return service.sync_folder
-
-
-# ==================== INFO FUNCTIONS ====================
-
-
-def print_sync_status() -> None:
-    """Print status sync (untuk debugging)."""
-    service = _get_sync_service()
-
-    print("\n=== Local Sync DB Status ===")
-    print(f"Local DB: {service.local_db_path}")
-    print(f"Sync Folder: {service.sync_folder}")
-    print(f"Total Rows: {service.count_rows()}")
-    print(f"Auto Sync: {'Enabled' if _auto_sync_enabled else 'Disabled'}")
-
-    # Count sync files
-    if service.sync_folder.exists():
-        sync_files = list(service.sync_folder.glob("sync_*.json"))
-        print(f"Sync Files: {len(sync_files)}")
-
-    print("=" * 40)
-    print("=" * 40)

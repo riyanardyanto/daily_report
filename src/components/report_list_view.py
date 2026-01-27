@@ -1,4 +1,6 @@
 import uuid
+from collections.abc import Callable
+from typing import Any
 
 import flet as ft
 
@@ -9,12 +11,163 @@ from src.utils.ui_helpers import open_dialog
 class ReportList(ft.ReorderableListView):
     """Reusable report list component."""
 
+    _last_cleared_state: list[dict[str, Any]] | None
+    _on_dirty: Callable[[], None] | None
+
+    def _mark_dirty(self) -> None:
+        cb = getattr(self, "_on_dirty", None)
+        if not callable(cb):
+            return
+        try:
+            cb()
+        except Exception:
+            return
+
+    def set_on_dirty(self, cb: Callable[[], None] | None) -> None:
+        """Register a callback called after content changes."""
+        self._on_dirty = cb
+
     def _clean_text(self, value) -> str:
         try:
             text = "" if value is None else str(value)
             return text.strip()
         except Exception:
             return ""
+
+    def _get_issue_column(self, issue_card: ft.Control) -> ft.Column | None:
+        try:
+            container = getattr(issue_card, "content", None)
+            column = getattr(container, "content", None)
+            return column if isinstance(column, ft.Column) else None
+        except Exception:
+            return None
+
+    def snapshot_state(self) -> list[dict[str, Any]]:
+        """Capture the current list content as plain data."""
+        state: list[dict[str, Any]] = []
+        try:
+            for card in list(getattr(self, "controls", None) or []):
+                issue_text = self._extract_issue_text(card)
+                details = self._extract_details(card)
+                normalized_details: list[dict[str, Any]] = []
+                for d in list(details or []):
+                    normalized_details.append(
+                        {
+                            "text": str(d.get("text", "") or ""),
+                            "actions": [
+                                str(x or "")
+                                for x in list(d.get("actions", []) or [])
+                                if str(x or "").strip() != ""
+                            ],
+                        }
+                    )
+                state.append(
+                    {"issue": str(issue_text or ""), "details": normalized_details}
+                )
+        except Exception:
+            return []
+        return state
+
+    def can_restore_last(self) -> bool:
+        return bool(self._last_cleared_state)
+
+    def discard_last_snapshot(self) -> None:
+        self._last_cleared_state = None
+
+    def get_last_snapshot(self) -> list[dict[str, Any]] | None:
+        return self._last_cleared_state
+
+    def set_last_snapshot(self, state: list[dict[str, Any]] | None) -> None:
+        self._last_cleared_state = list(state) if state else None
+
+    def load_state(
+        self, state: list[dict[str, Any]] | None, *, replace_current: bool = True
+    ) -> bool:
+        """Load a previously captured snapshot into the UI (best-effort)."""
+        if not state:
+            return False
+
+        try:
+            if replace_current:
+                self.controls.clear()
+
+            for idx, item in enumerate(list(state)):
+                issue_text = str(item.get("issue", "") or "")
+                details = list(item.get("details", []) or [])
+
+                issue_tf_ref: ft.Ref[ft.TextField] = ft.Ref()
+                card = self._make_issue_card(
+                    issue_text,
+                    index=idx,
+                    key=f"item-{uuid.uuid4()}",
+                    issue_textfield_ref=issue_tf_ref,
+                )
+                self.controls.append(card)
+
+                issue_column = self._get_issue_column(card)
+                if issue_column is None:
+                    continue
+
+                for detail in details:
+                    detail_text = str(detail.get("text", "") or "")
+                    action_texts = [
+                        str(x or "")
+                        for x in list(detail.get("actions", []) or [])
+                        if str(x or "").strip() != ""
+                    ]
+
+                    if len(issue_column.controls) == 1:
+                        issue_column.controls.append(
+                            ft.Divider(height=5, color=ft.Colors.TRANSPARENT)
+                        )
+
+                    tile = self._make_detail_description_for_card(
+                        issue_column,
+                        detail_text,
+                        initially_expanded=False,
+                    )
+                    tile.controls = [
+                        self._make_action_container(a, detail_tile=tile)
+                        for a in action_texts
+                    ]
+                    issue_column.controls.append(tile)
+
+            self.update()
+            self._mark_dirty()
+            return True
+        except Exception:
+            try:
+                self.update()
+            except Exception:
+                pass
+            return False
+
+    def clear_all(self, *, backup: bool = True) -> bool:
+        """Clear all cards, optionally keeping a restore snapshot."""
+        try:
+            cards = list(getattr(self, "controls", None) or [])
+            if not cards:
+                return False
+
+            if backup:
+                self._last_cleared_state = self.snapshot_state()
+
+            self.controls.clear()
+            self.update()
+            self._mark_dirty()
+            return True
+        except Exception:
+            try:
+                self.update()
+            except Exception:
+                pass
+            return False
+
+    def restore_last(self, *, replace_current: bool = True) -> bool:
+        """Restore the last cleared list (best-effort)."""
+        return self.load_state(
+            self._last_cleared_state, replace_current=replace_current
+        )
 
     def build_report_text(self) -> str:
         """Build report text for all cards (skips empty/whitespace fields)."""
@@ -116,6 +269,8 @@ class ReportList(ft.ReorderableListView):
 
     def __init__(self, **kwargs):
         kwargs.setdefault("expand", True)
+        self._last_cleared_state = None
+        self._on_dirty = None
         super().__init__(
             padding=ft.padding.symmetric(vertical=0, horizontal=0),
             on_reorder=self._on_reorder,
@@ -142,6 +297,7 @@ class ReportList(ft.ReorderableListView):
             return
 
         self.update()
+        self._mark_dirty()
 
     def append_item_issue(self, text: str = "", *, focus: bool = False):
         """Append a new issue card with a stable key.
@@ -160,6 +316,7 @@ class ReportList(ft.ReorderableListView):
             )
         )
         self.update()
+        self._mark_dirty()
 
         if focus:
             try:
@@ -192,6 +349,7 @@ class ReportList(ft.ReorderableListView):
             issue_column.controls.append(detail_tile)
 
             issue_column.update()
+            self._mark_dirty()
 
             if focus:
                 try:
@@ -310,6 +468,7 @@ class ReportList(ft.ReorderableListView):
                 pass
 
             detail_tile.update()
+            self._mark_dirty()
 
             if focus:
                 try:
@@ -351,6 +510,7 @@ class ReportList(ft.ReorderableListView):
                 issue_column.controls.pop(1)
 
             issue_column.update()
+            self._mark_dirty()
         except Exception:
             try:
                 self.update()
@@ -390,10 +550,11 @@ class ReportList(ft.ReorderableListView):
             actions=[
                 ft.Row(
                     controls=[
-                        ft.TextButton(
+                        ft.ElevatedButton(
                             "Cancel",
                             on_click=_close_dialog,
-                            style=ft.ButtonStyle(color=SECONDARY),
+                            color=ON_COLOR,
+                            bgcolor=DANGER,
                         ),
                         ft.ElevatedButton(
                             "Delete",
@@ -438,6 +599,7 @@ class ReportList(ft.ReorderableListView):
                             break
 
             detail_tile.update()
+            self._mark_dirty()
         except Exception:
             try:
                 self.update()
@@ -480,10 +642,11 @@ class ReportList(ft.ReorderableListView):
             actions=[
                 ft.Row(
                     controls=[
-                        ft.TextButton(
+                        ft.ElevatedButton(
                             "Cancel",
                             on_click=_close_dialog,
-                            style=ft.ButtonStyle(color=SECONDARY),
+                            color=ON_COLOR,
+                            bgcolor=DANGER,
                         ),
                         ft.ElevatedButton(
                             "Delete",
@@ -524,6 +687,7 @@ class ReportList(ft.ReorderableListView):
                             break
 
             self.update()
+            self._mark_dirty()
         except Exception:
             try:
                 self.update()
@@ -561,10 +725,11 @@ class ReportList(ft.ReorderableListView):
             actions=[
                 ft.Row(
                     controls=[
-                        ft.TextButton(
+                        ft.ElevatedButton(
                             "Cancel",
                             on_click=_close_dialog,
-                            style=ft.ButtonStyle(color=SECONDARY),
+                            color=ON_COLOR,
+                            bgcolor=DANGER,
                         ),
                         ft.ElevatedButton(
                             "Delete",
@@ -669,6 +834,10 @@ class ReportList(ft.ReorderableListView):
             except Exception:
                 pass
 
+        def _on_issue_text_change(e: ft.ControlEvent | None = None):
+            _sync_add_detail_enabled(e)
+            self._mark_dirty()
+
         return ft.Container(
             content=ft.Row(
                 [
@@ -691,8 +860,8 @@ class ReportList(ft.ReorderableListView):
                         expand=True,
                         height=34,
                         content_padding=ft.padding.symmetric(horizontal=10, vertical=8),
-                        on_change=_sync_add_detail_enabled,
-                        on_blur=_sync_add_detail_enabled,
+                        on_change=_on_issue_text_change,
+                        on_blur=_on_issue_text_change,
                     ),
                     ft.Container(
                         width=34,
@@ -776,6 +945,10 @@ class ReportList(ft.ReorderableListView):
             except Exception:
                 pass
 
+        def _on_detail_text_change(e: ft.ControlEvent | None = None):
+            _sync_add_action_enabled(e)
+            self._mark_dirty()
+
         return ft.ExpansionTile(
             ref=tile_ref,
             affinity=ft.TileAffinity.LEADING,
@@ -808,8 +981,8 @@ class ReportList(ft.ReorderableListView):
                         content_padding=ft.padding.only(
                             left=10, right=0, top=0, bottom=20
                         ),
-                        on_change=_sync_add_action_enabled,
-                        on_blur=_sync_add_action_enabled,
+                        on_change=_on_detail_text_change,
+                        on_blur=_on_detail_text_change,
                     ),
                     ft.Container(
                         width=30,
@@ -909,6 +1082,8 @@ class ReportList(ft.ReorderableListView):
                         content_padding=ft.padding.only(
                             left=10, right=0, top=0, bottom=20
                         ),
+                        on_change=lambda _e: self._mark_dirty(),
+                        on_blur=lambda _e: self._mark_dirty(),
                     ),
                     ft.Container(
                         width=30,

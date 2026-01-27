@@ -12,16 +12,14 @@ import flet as ft
 from src.services.config_service import get_history_sync_config, get_ui_config
 from src.services.history_db_adapter import (
     cleanup_sync_files,
-    count_history_rows,
     export_history_db_to_csv,
     manual_sync,
-    migrate_history_csv_to_sqlite,
     publish_all_history_to_sync,
     read_history_filtered_tail,
     read_history_filtered_tail_no_count,
     read_history_tail,
 )
-from src.utils.theme import ON_COLOR, PRIMARY, SECONDARY
+from src.utils.theme import DANGER, ON_COLOR, PRIMARY
 from src.utils.ui_helpers import open_dialog, snack
 
 
@@ -73,7 +71,6 @@ class HistoryTableDialog:
         self._filter_tf: ft.TextField | None = None
 
         self._file_picker = ft.FilePicker()
-        self._import_picker = ft.FilePicker()
 
         self._total_rows: int = 0
         self._base_rows_data: list[dict] = []
@@ -113,7 +110,6 @@ class HistoryTableDialog:
 
         # Wire file picker callbacks once.
         self._file_picker.on_result = self._on_export_result
-        self._import_picker.on_result = self._on_import_csv_result
 
     def _sort_rows(self, rows: list[dict]) -> list[dict]:
         if not rows:
@@ -223,8 +219,11 @@ class HistoryTableDialog:
                 "Use this once when onboarding a new PC. Continue?"
             ),
             actions=[
-                ft.TextButton(
-                    "Cancel", on_click=_close, style=ft.ButtonStyle(color=SECONDARY)
+                ft.ElevatedButton(
+                    "Cancel",
+                    on_click=_close,
+                    color=ON_COLOR,
+                    bgcolor=DANGER,
                 ),
                 ft.ElevatedButton(
                     "Publish",
@@ -298,8 +297,11 @@ class HistoryTableDialog:
                 f"Archive files older than {retention_days} days and keep {keep_latest_fullsync} newest fullsync file(s). Continue?"
             ),
             actions=[
-                ft.TextButton(
-                    "Cancel", on_click=_close, style=ft.ButtonStyle(color=SECONDARY)
+                ft.ElevatedButton(
+                    "Cancel",
+                    on_click=_close,
+                    color=ON_COLOR,
+                    bgcolor=DANGER,
                 ),
                 ft.ElevatedButton(
                     "Clean up",
@@ -359,6 +361,7 @@ class HistoryTableDialog:
                 ],
                 expand=True,
             ),
+            # Final size is set by _apply_responsive_size().
             width=900,
             height=500,
             padding=ft.padding.all(12),
@@ -393,11 +396,13 @@ class HistoryTableDialog:
                         ft.TextButton(
                             "Close",
                             on_click=self.close,
-                            style=ft.ButtonStyle(color=SECONDARY),
+                            style=ft.ButtonStyle(color=ON_COLOR, bgcolor=DANGER),
                         ),
                     ],
                     alignment=ft.MainAxisAlignment.END,
                     spacing=8,
+                    wrap=True,
+                    run_spacing=8,
                 )
             ],
             actions_alignment=ft.MainAxisAlignment.END,
@@ -406,28 +411,62 @@ class HistoryTableDialog:
 
         open_dialog(page, self._dlg)
 
+        # Apply responsive sizing immediately (even while loading) so actions
+        # don't get pushed off-screen on small windows.
+        try:
+            self._apply_responsive_size()
+        except Exception:
+            pass
+
+        # Some runtimes don't have correct page dimensions until after the
+        # first UI frame; schedule a second layout pass shortly after opening.
+        try:
+            runner = getattr(page, "run_task", None)
+            if callable(runner):
+
+                async def _post_open_layout():
+                    try:
+                        await asyncio.sleep(0.05)
+                        self._apply_responsive_size()
+                        try:
+                            if self._content_container is not None:
+                                self._content_container.update()
+                        except Exception:
+                            pass
+                        try:
+                            if self._dlg is not None:
+                                self._dlg.update()
+                        except Exception:
+                            pass
+                        try:
+                            page.update()
+                        except Exception:
+                            pass
+                    except Exception:
+                        pass
+
+                runner(_post_open_layout)
+        except Exception:
+            pass
+
         async def _load_async():
             try:
-                # Auto-sync (import/export) before reading history when using SQLite.
-                # This pulls latest rows from other PCs into the local cache.
+                # Start sync in the background so opening the dialog is fast.
+                # We'll refresh the table after sync completes.
+                sync_task: asyncio.Task | None = None
                 if self._use_sqlite and self.db_path is not None:
                     try:
                         try:
-                            loading_text.value = "Syncing…"
+                            loading_text.value = (
+                                "Loading history… (syncing in background)"
+                            )
                             loading_text.update()
                         except Exception:
                             pass
 
-                        imported, exported = await asyncio.to_thread(manual_sync)
-                        if imported or exported:
-                            try:
-                                loading_text.value = f"Sync done: imported {imported}, exported {exported}"
-                                loading_text.update()
-                            except Exception:
-                                pass
+                        sync_task = asyncio.create_task(asyncio.to_thread(manual_sync))
                     except Exception:
-                        # Sync failures should never block viewing history.
-                        pass
+                        sync_task = None
 
                 def _read_source():
                     max_rows = self.max_rows if self.max_rows > 0 else 1000
@@ -560,8 +599,6 @@ class HistoryTableDialog:
                 # Keep the same container instance to avoid UID/assert issues.
                 if self._content_container is not None:
                     self._content_container.content = new_content
-                    self._content_container.width = 1200
-                    self._content_container.height = 650
                     self._content_container.expand = True
 
                 # Update existing dialog instead of creating a new one.
@@ -586,14 +623,6 @@ class HistoryTableDialog:
                                 bgcolor=ft.Colors.DEEP_ORANGE_600,
                             )
                         )
-                        controls.append(
-                            ft.ElevatedButton(
-                                "Load from CSV",
-                                on_click=self._on_load_from_csv_click,
-                                color=ON_COLOR,
-                                bgcolor=PRIMARY,
-                            )
-                        )
                     controls.append(
                         ft.ElevatedButton(
                             "Export",
@@ -603,10 +632,11 @@ class HistoryTableDialog:
                         )
                     )
                     controls.append(
-                        ft.TextButton(
+                        ft.ElevatedButton(
                             "Close",
                             on_click=self.close,
-                            style=ft.ButtonStyle(color=SECONDARY),
+                            color=ON_COLOR,
+                            bgcolor=DANGER,
                         )
                     )
                     self._dlg.actions = [
@@ -614,6 +644,8 @@ class HistoryTableDialog:
                             controls=controls,
                             alignment=ft.MainAxisAlignment.END,
                             spacing=8,
+                            wrap=True,
+                            run_spacing=8,
                         )
                     ]
 
@@ -642,6 +674,134 @@ class HistoryTableDialog:
                 except Exception:
                     pass
 
+                # After initial render, wait for background sync and refresh.
+                if sync_task is not None:
+
+                    async def _after_sync_refresh():
+                        try:
+                            imported, exported = await sync_task
+
+                            # If dialog closed, do nothing.
+                            try:
+                                if self._dlg is None or not bool(
+                                    getattr(self._dlg, "open", False)
+                                ):
+                                    return
+                            except Exception:
+                                return
+
+                            # If user is actively filtering, avoid rewriting rows.
+                            q_now = ""
+                            try:
+                                q_now = str(
+                                    getattr(self._filter_tf, "value", "") or ""
+                                ).strip()
+                            except Exception:
+                                q_now = ""
+
+                            if imported > 0 and not q_now:
+                                try:
+                                    max_rows = (
+                                        self.max_rows if self.max_rows > 0 else 1000
+                                    )
+                                    fn2, total2, rows2 = await asyncio.to_thread(
+                                        read_history_tail,
+                                        db_path=self.db_path,
+                                        limit=max_rows,
+                                    )
+                                    self._total_rows = int(total2)
+                                    self._base_rows_data = list(rows2)
+                                    self._rows_data = list(rows2)
+                                    self._filtered_rows_data = list(rows2)
+                                    if fn2:
+                                        self._fieldnames = [
+                                            c
+                                            for c in fn2
+                                            if c not in self.hidden_columns
+                                        ]
+
+                                    if self._dt is not None:
+                                        # Rebuild columns if needed, otherwise refresh rows.
+                                        if len(self._dt.columns or []) != len(
+                                            self._fieldnames
+                                        ):
+                                            self._dt.columns = [
+                                                ft.DataColumn(
+                                                    ft.Container(
+                                                        content=ft.Text(
+                                                            (
+                                                                {
+                                                                    "link_up": "lu",
+                                                                    "func_location": "fl",
+                                                                    "date_field": "date",
+                                                                    "shift": "shift",
+                                                                }.get(name, name)
+                                                            ).upper(),
+                                                            size=11,
+                                                            weight=ft.FontWeight.W_600,
+                                                        ),
+                                                        width=self._get_column_width(
+                                                            name
+                                                        ),
+                                                    )
+                                                )
+                                                for name in self._fieldnames
+                                            ]
+
+                                        widths = self._get_column_widths_snapshot()
+                                        self._dt.rows = self._build_rows(
+                                            self._filtered_rows_data,
+                                            widths,
+                                        )
+                                        try:
+                                            self._dt.update()
+                                        except Exception:
+                                            pass
+
+                                    if self._title_text is not None:
+                                        self._title_text.value = f"{self.title} (showing {len(self._rows_data)} of {self._total_rows} rows)"
+                                except Exception:
+                                    pass
+                            else:
+                                # Still update the title line to reflect sync completion.
+                                try:
+                                    if self._title_text is not None:
+                                        self._title_text.value = f"{self.title} (showing {len(self._filtered_rows_data)} of {self._total_rows} rows)"
+                                except Exception:
+                                    pass
+
+                            # Friendly message (non-blocking).
+                            try:
+                                if imported or exported:
+                                    snack(
+                                        page,
+                                        f"Sync done: imported {imported}, exported {exported}",
+                                        kind="success",
+                                    )
+                            except Exception:
+                                pass
+
+                            try:
+                                self._apply_responsive_size()
+                            except Exception:
+                                pass
+                            try:
+                                page.update()
+                            except Exception:
+                                pass
+                        except Exception:
+                            # Sync failures should never block viewing history.
+                            return
+
+                    try:
+                        runner2 = getattr(page, "run_task", None)
+                        if callable(runner2):
+                            runner2(_after_sync_refresh)
+                        else:
+                            asyncio.create_task(_after_sync_refresh())
+                    except Exception:
+                        pass
+
             except Exception as ex:
                 snack(page, f"Failed to read history: {ex}", kind="error")
 
@@ -659,6 +819,7 @@ class HistoryTableDialog:
         try:
             max_rows = self.max_rows if self.max_rows > 0 else 1000
             if self._use_sqlite and self.db_path is not None:
+                # Avoid running sync here (blocking) to prevent long UI hangs.
                 fieldnames, total_rows, rows_data = read_history_tail(
                     db_path=self.db_path,
                     limit=max_rows,
@@ -778,8 +939,6 @@ class HistoryTableDialog:
 
             if self._content_container is not None:
                 self._content_container.content = new_content
-                self._content_container.width = 1200
-                self._content_container.height = 650
                 self._content_container.expand = True
 
             if self._title_text is not None:
@@ -787,21 +946,15 @@ class HistoryTableDialog:
 
             if self._dlg is not None:
                 controls: list[ft.Control] = [
-                    ft.TextButton(
+                    ft.ElevatedButton(
                         "Close",
                         on_click=self.close,
-                        style=ft.ButtonStyle(color=SECONDARY),
+                        color=ON_COLOR,
+                        bgcolor=DANGER,
                     )
                 ]
                 if self._use_sqlite and self.db_path is not None:
-                    controls.append(
-                        ft.ElevatedButton(
-                            "Load from CSV",
-                            on_click=self._on_load_from_csv_click,
-                            color=ON_COLOR,
-                            bgcolor=PRIMARY,
-                        )
-                    )
+                    pass
                 controls.append(
                     ft.ElevatedButton(
                         "Export",
@@ -815,6 +968,8 @@ class HistoryTableDialog:
                         controls=controls,
                         alignment=ft.MainAxisAlignment.END,
                         spacing=8,
+                        wrap=True,
+                        run_spacing=8,
                     )
                 ]
 
@@ -953,208 +1108,9 @@ class HistoryTableDialog:
                 return
             if self._file_picker not in overlay:
                 overlay.append(self._file_picker)
-            if self._import_picker not in overlay:
-                overlay.append(self._import_picker)
-                page.update()
+            page.update()
         except Exception:
             pass
-
-    def _on_load_from_csv_click(self, _e=None):
-        page = self.page
-        self._ensure_file_picker_added()
-
-        if not (self._use_sqlite and self.db_path is not None):
-            snack(page, "SQLite history is not enabled", kind="warning")
-            return
-
-        try:
-            self._import_picker.pick_files(
-                dialog_title="Select history CSV to import",
-                allow_multiple=False,
-                allowed_extensions=["csv"],
-            )
-        except Exception as ex:
-            snack(page, f"Failed to open file dialog: {ex}", kind="error")
-
-    def _on_import_csv_result(self, ev: ft.FilePickerResultEvent):
-        page = self.page
-        if page is None:
-            return
-
-        if not (self._use_sqlite and self.db_path is not None):
-            return
-
-        try:
-            files = getattr(ev, "files", None)
-        except Exception:
-            files = None
-
-        csv_path = None
-        try:
-            if files and len(files) > 0:
-                csv_path = getattr(files[0], "path", None)
-        except Exception:
-            csv_path = None
-
-        p = str(csv_path or "").strip()
-        if not p:
-            return
-
-        try:
-            snack(page, "Importing CSV…", kind="warning")
-        except Exception:
-            pass
-
-        async def _import_async():
-            try:
-
-                def _worker_import_and_reload():
-                    before = count_history_rows(self.db_path)
-                    ok, msg = migrate_history_csv_to_sqlite(
-                        csv_path=Path(p),
-                        db_path=self.db_path,
-                    )
-                    after = count_history_rows(self.db_path)
-
-                    # Reload tail view after import
-                    max_rows = self.max_rows if self.max_rows > 0 else 1000
-                    fieldnames, total_rows, rows_data = read_history_tail(
-                        db_path=self.db_path,
-                        limit=max_rows,
-                    )
-                    return ok, msg, before, after, fieldnames, total_rows, rows_data
-
-                (
-                    ok,
-                    msg,
-                    before,
-                    after,
-                    fieldnames,
-                    total_rows,
-                    rows_data,
-                ) = await asyncio.to_thread(_worker_import_and_reload)
-
-                # Update state on UI thread
-                self._total_rows = int(total_rows)
-                sorted_rows = self._sort_rows(list(rows_data))
-                self._base_rows_data = list(sorted_rows)
-                self._rows_data = list(sorted_rows)
-                self._filtered_rows_data = list(sorted_rows)
-
-                visible_fields = [
-                    c for c in (fieldnames or []) if c not in self.hidden_columns
-                ]
-                if visible_fields:
-                    self._fieldnames = list(visible_fields)
-
-                try:
-                    if self._filter_tf is not None:
-                        self._filter_tf.value = ""
-                        self._filter_tf.disabled = False
-                        self._filter_tf.update()
-                except Exception:
-                    pass
-
-                if self._title_text is not None:
-                    self._title_text.value = f"{self.title} (showing {len(self._rows_data)} of {self._total_rows} rows)"
-
-                if self._dt is not None:
-                    # Rebuild columns if needed, otherwise just refresh rows.
-                    if len(self._dt.columns or []) != len(self._fieldnames):
-                        self._dt.columns = [
-                            ft.DataColumn(
-                                ft.Container(
-                                    content=ft.Text(
-                                        (
-                                            {
-                                                "link_up": "lu",
-                                                "func_location": "fl",
-                                                "date_field": "date",
-                                                "shift": "shift",
-                                            }.get(name, name)
-                                        ).upper(),
-                                        size=11,
-                                        weight=ft.FontWeight.W_600,
-                                    ),
-                                    width=self._get_column_width(name),
-                                )
-                            )
-                            for name in self._fieldnames
-                        ]
-
-                    widths = self._get_column_widths_snapshot()
-                    self._dt.rows = self._build_rows(self._filtered_rows_data, widths)
-                    try:
-                        self._dt.update()
-                    except Exception:
-                        pass
-
-                self._apply_responsive_size()
-                self._apply_column_widths()
-
-                delta = int(after) - int(before)
-                if ok:
-                    snack(
-                        page,
-                        f"Imported: {Path(p).name} (+{max(0, delta)} new rows).",
-                        kind="success",
-                    )
-                else:
-                    snack(page, str(msg or "Import failed"), kind="warning")
-
-                try:
-                    page.update()
-                except Exception:
-                    pass
-            except Exception as ex:
-                snack(page, f"Import failed: {ex}", kind="error")
-
-        runner = getattr(page, "run_task", None)
-        if callable(runner):
-            runner(_import_async)
-        else:
-            # Blocking fallback
-            try:
-                before = count_history_rows(self.db_path)
-                ok, msg = migrate_history_csv_to_sqlite(
-                    csv_path=Path(p),
-                    db_path=self.db_path,
-                )
-                after = count_history_rows(self.db_path)
-                max_rows = self.max_rows if self.max_rows > 0 else 1000
-                fieldnames, total_rows, rows_data = read_history_tail(
-                    db_path=self.db_path,
-                    limit=max_rows,
-                )
-
-                self._total_rows = int(total_rows)
-                sorted_rows = self._sort_rows(list(rows_data))
-                self._base_rows_data = list(sorted_rows)
-                self._rows_data = list(sorted_rows)
-                self._filtered_rows_data = list(sorted_rows)
-                visible_fields = [
-                    c for c in (fieldnames or []) if c not in self.hidden_columns
-                ]
-                if visible_fields:
-                    self._fieldnames = list(visible_fields)
-                if self._filter_tf is not None:
-                    self._filter_tf.value = ""
-                if self._dt is not None:
-                    widths = self._get_column_widths_snapshot()
-                    self._dt.rows = self._build_rows(self._filtered_rows_data, widths)
-                    self._dt.update()
-
-                delta = int(after) - int(before)
-                if ok:
-                    snack(
-                        page,
-                        f"Imported: {Path(p).name} (+{max(0, delta)} new rows).",
-                        kind="success",
-                    )
-                else:
-                    snack(page, str(msg or "Import failed"), kind="warning")
-            except Exception as ex:
-                snack(page, f"Import failed: {ex}", kind="error")
 
     def _on_export_click(self, _e=None):
         page = self.page
@@ -1218,10 +1174,11 @@ class HistoryTableDialog:
                 actions=[
                     ft.Row(
                         controls=[
-                            ft.TextButton(
+                            ft.ElevatedButton(
                                 "Cancel",
                                 on_click=_close_choice,
-                                style=ft.ButtonStyle(color=SECONDARY),
+                                color=ON_COLOR,
+                                bgcolor=DANGER,
                             ),
                             ft.ElevatedButton(
                                 "Current view",
@@ -1673,27 +1630,73 @@ class HistoryTableDialog:
         except Exception:
             pass
 
+    def _get_page_window_size(self) -> tuple[int, int]:
+        page = self.page
+        w = None
+        h = None
+        try:
+            win = getattr(page, "window", None)
+            if win is not None:
+                w = getattr(win, "width", None)
+                h = getattr(win, "height", None)
+        except Exception:
+            w = None
+            h = None
+
+        if not w:
+            try:
+                w = getattr(page, "width", None)
+            except Exception:
+                w = None
+        if not h:
+            try:
+                h = getattr(page, "height", None)
+            except Exception:
+                h = None
+
+        return int(w or 1200), int(h or 900)
+
     def _apply_responsive_size(self):
         page = self.page
-        if self._content_container is None or self._dt is None:
+        if self._content_container is None:
             return
 
         try:
-            w = getattr(page, "width", None) or 1200
-            h = getattr(page, "height", None) or 900
+            w, h = self._get_page_window_size()
 
-            self._content_container.width = max(800, int(w * 0.90))
-            self._content_container.height = max(520, int(h * 0.82))
-            self._dt.width = max(760, int(self._content_container.width * 0.98))
+            # Clamp sizes to the current window so the dialog (and its action
+            # buttons) never overflow off-screen.
+            # Leave room for title + actions + outer padding.
+            max_w = max(280, w - 40)
+            max_h = max(220, h - 220)
+            target_w = int(w * 0.92)
+            target_h = int(h * 0.78)
 
-            self._apply_column_widths()
+            self._content_container.width = min(max_w, max(320, target_w))
+            self._content_container.height = min(max_h, max(280, target_h))
 
+            if self._dt is not None:
+                self._dt.width = max(240, int(self._content_container.width * 0.98))
+                self._apply_column_widths()
+                try:
+                    self._dt.update()
+                except Exception:
+                    pass
             try:
-                self._dt.update()
+                self._content_container.update()
+            except Exception:
+                pass
+
+            # When the dialog is first opened, explicit updates help apply the
+            # size change before the user resizes the window.
+            try:
+                if self._dlg is not None:
+                    self._dlg.update()
             except Exception:
                 pass
             try:
-                self._content_container.update()
+                if page is not None:
+                    page.update()
             except Exception:
                 pass
         except Exception:

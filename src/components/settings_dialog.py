@@ -5,7 +5,7 @@ import asyncio
 import flet as ft
 
 from src.utils.helpers import load_settings_options, save_settings_options
-from src.utils.theme import ON_COLOR, PRIMARY, SECONDARY
+from src.utils.theme import DANGER, ON_COLOR, PRIMARY
 from src.utils.ui_helpers import open_dialog, snack
 
 
@@ -259,10 +259,11 @@ class SettingsDialog:
             actions=[
                 ft.Row(
                     controls=[
-                        ft.TextButton(
+                        ft.ElevatedButton(
                             "Close",
                             on_click=_close,
-                            style=ft.ButtonStyle(color=SECONDARY),
+                            color=ON_COLOR,
+                            bgcolor=DANGER,
                         ),
                         save_btn,
                     ],

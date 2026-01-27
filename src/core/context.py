@@ -13,7 +13,7 @@ from src.services.config_service import (
     get_spa_service_config,
     get_ui_config,
 )
-from src.utils.ui_helpers import open_dialog, snack
+from src.utils.ui_helpers import open_dialog
 
 
 @dataclass(slots=True)
@@ -32,9 +32,6 @@ class AppContext:
     @property
     def logger(self):
         return get_logger(self.logger_name)
-
-    def toast(self, message: str, *, kind: str | None = None) -> None:
-        snack(self.page, message, kind=kind)
 
     def dialog(self, dlg: ft.AlertDialog) -> bool:
         return open_dialog(self.page, dlg)

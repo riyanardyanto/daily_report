@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import os
+import shutil
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -37,6 +39,17 @@ sync_dir = ""
 # - keep_latest_fullsync: keep N newest fullsync_*.json files for onboarding.
 retention_days = 30
 keep_latest_fullsync = 1
+
+[HISTORY_STORAGE]
+# Storage mode for history DB:
+# - "local_sync" (default): per-PC local SQLite + JSON sync folder (recommended for shared folders)
+# - "shared_sqlite": directly read/write a single SQLite file in a shared folder (NOT recommended)
+#
+# If you choose shared_sqlite, set shared_db_path to a UNC or shared path.
+# Example:
+# shared_db_path = "\\\\SERVER\\Share\\DailyReport\\history.db"
+mode = "local_sync"
+shared_db_path = ""
 """
 
 
@@ -54,6 +67,22 @@ def ensure_default_config() -> tuple[Path, bool, str | None]:
     path = get_config_path()
     if path.exists():
         return path, False, None
+
+    # Migration: older versions stored config under per-user AppData.
+    # If the new portable config (next to exe) is missing but the legacy one exists,
+    # copy it once to preserve user settings.
+    try:
+        base = os.environ.get("LOCALAPPDATA") or os.environ.get("APPDATA")
+        if base:
+            legacy = (
+                Path(base) / "Daily Report" / "data_app" / "settings" / "config.toml"
+            )
+            if legacy.exists():
+                path.parent.mkdir(parents=True, exist_ok=True)
+                shutil.copy2(legacy, path)
+                return path, True, None
+    except Exception:
+        pass
 
     try:
         path.parent.mkdir(parents=True, exist_ok=True)
@@ -121,6 +150,54 @@ class HistorySyncConfig:
     sync_dir: str = ""
     retention_days: int = 30
     keep_latest_fullsync: int = 1
+
+
+@dataclass(frozen=True)
+class HistoryStorageConfig:
+    mode: str = "local_sync"
+    shared_db_path: str = ""
+
+
+def get_history_storage_config() -> tuple[HistoryStorageConfig, str | None]:
+    """Read history storage selection from [HISTORY_STORAGE].
+
+    Env overrides (recommended for deployment):
+    - DAILY_REPORT_HISTORY_MODE: "local_sync" or "shared_sqlite"
+    - DAILY_REPORT_SHARED_DB_PATH: absolute path/UNC to history.db
+    """
+
+    # Env overrides first
+    env_mode = str(os.environ.get("DAILY_REPORT_HISTORY_MODE", "") or "").strip()
+    env_shared = str(os.environ.get("DAILY_REPORT_SHARED_DB_PATH", "") or "").strip()
+
+    cfg, _path, err = load_config_toml()
+    if err:
+        # Even if config fails, honor env overrides.
+        return (
+            HistoryStorageConfig(
+                mode=(env_mode or "local_sync"),
+                shared_db_path=env_shared,
+            ),
+            err,
+        )
+
+    sec = cfg.get("HISTORY_STORAGE") if isinstance(cfg, dict) else None
+    if not isinstance(sec, dict):
+        sec = {}
+
+    def _s(key: str, default: str = "") -> str:
+        try:
+            return str(sec.get(key, default) or "").strip()
+        except Exception:
+            return default
+
+    mode = (env_mode or _s("mode", "local_sync") or "local_sync").strip().lower()
+    if mode not in ("local_sync", "shared_sqlite"):
+        mode = "local_sync"
+
+    shared_db_path = (env_shared or _s("shared_db_path", "")).strip()
+
+    return HistoryStorageConfig(mode=mode, shared_db_path=shared_db_path), None
 
 
 def get_history_sync_config() -> tuple[HistorySyncConfig, str | None]:
@@ -279,19 +356,3 @@ def get_spa_service_config() -> tuple[SpaServiceConfig, str | None]:
         ),
         None,
     )
-
-
-def get_spa_credentials(
-    *,
-    default_username: str = "",
-    default_password: str = "",
-) -> tuple[str, str, str | None]:
-    """Convenience helper for SPA auth credentials.
-
-    Returns:
-        (username, password, error_message)
-    """
-    spa_cfg, err = get_spa_service_config()
-    username = spa_cfg.username or str(default_username or "")
-    password = spa_cfg.password or str(default_password or "")
-    return username, password, err

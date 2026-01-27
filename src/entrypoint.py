@@ -8,7 +8,11 @@ import flet as ft
 from src.app import DashboardApp
 from src.core.context import build_context
 from src.core.safe import safe_event
-from src.utils.helpers import get_data_app_dir, resource_path
+from src.utils.helpers import (
+    ensure_portable_targets_seeded,
+    get_data_app_dir,
+    resource_path,
+)
 
 
 def _main(page: ft.Page) -> None:
@@ -51,9 +55,12 @@ def _get_assets_dir() -> str:
 def run() -> None:
     import flet as ft
 
-    # Ensure app-data folder exists next to script/exe.
+    # Ensure portable folders exist next to the exe.
     try:
-        get_data_app_dir()
+        get_data_app_dir(folder_name="data_app/log")
+        get_data_app_dir(folder_name="data_app/settings")
+        get_data_app_dir(folder_name="data_app/targets")
+        ensure_portable_targets_seeded()
     except Exception:
         pass
 

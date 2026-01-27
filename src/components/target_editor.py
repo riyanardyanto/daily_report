@@ -7,7 +7,7 @@ import flet as ft
 
 from src.utils.file_lock import is_file_locked_windows
 from src.utils.helpers import data_app_path, load_targets_csv
-from src.utils.theme import ON_COLOR, PRIMARY, SECONDARY
+from src.utils.theme import DANGER, ON_COLOR, PRIMARY, SECONDARY
 from src.utils.ui_helpers import open_dialog, snack
 
 
@@ -159,10 +159,11 @@ class TargetEditorDialog:
             actions=[
                 ft.Row(
                     controls=[
-                        ft.TextButton(
+                        ft.ElevatedButton(
                             "Close",
                             on_click=_close_dialog,
-                            style=ft.ButtonStyle(color=SECONDARY),
+                            color=ON_COLOR,
+                            bgcolor=DANGER,
                         ),
                         paste_btn,
                         save_btn,

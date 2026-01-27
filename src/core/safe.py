@@ -1,13 +1,11 @@
 from __future__ import annotations
 
 from collections.abc import Callable
-from typing import Any, TypeVar
+from typing import Any
 
 import flet as ft
 
 from src.core.logging import get_logger
-
-T = TypeVar("T")
 
 
 def safe_event(
@@ -39,13 +37,3 @@ def safe_event(
             return None
 
     return _wrapped
-
-
-def safe_update(control: Any) -> None:
-    """Best-effort update for a control/page."""
-
-    try:
-        if control is not None:
-            control.update()
-    except Exception:
-        pass

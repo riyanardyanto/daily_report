@@ -15,9 +15,6 @@ import contextlib
 import sqlite3
 import time
 from pathlib import Path
-from typing import Any, Callable, TypeVar
-
-T = TypeVar("T")
 
 
 def _configure_connection_network_safe(conn: sqlite3.Connection) -> None:
@@ -47,64 +44,6 @@ def _configure_connection_network_safe(conn: sqlite3.Connection) -> None:
 
     # Cache size untuk performance
     conn.execute("PRAGMA cache_size = -2000")  # 2MB cache
-
-
-def retry_on_locked(
-    func: Callable[..., T],
-    max_retries: int = 5,
-    initial_delay: float = 0.1,
-    max_delay: float = 5.0,
-) -> Callable[..., T]:
-    """
-    Decorator untuk retry operation jika database locked.
-
-    Args:
-        max_retries: Maximum retry attempts
-        initial_delay: Initial delay dalam seconds
-        max_delay: Maximum delay dalam seconds (exponential backoff)
-    """
-
-    def wrapper(*args: Any, **kwargs: Any) -> T:
-        delay = initial_delay
-        last_error = None
-
-        for attempt in range(max_retries + 1):
-            try:
-                return func(*args, **kwargs)
-
-            except sqlite3.OperationalError as e:
-                last_error = e
-                error_msg = str(e).lower()
-
-                # Retry hanya untuk locked/busy errors
-                if "locked" in error_msg or "busy" in error_msg:
-                    if attempt < max_retries:
-                        # Exponential backoff dengan jitter
-                        import random
-
-                        jitter = random.uniform(0, delay * 0.1)
-                        sleep_time = min(delay + jitter, max_delay)
-
-                        print(
-                            f"Database locked, retry {attempt + 1}/{max_retries} after {sleep_time:.2f}s"
-                        )
-                        time.sleep(sleep_time)
-
-                        # Exponential backoff
-                        delay = min(delay * 2, max_delay)
-                        continue
-
-                # Error lain atau max retries reached
-                raise
-
-            except Exception:
-                # Error non-locking, langsung raise
-                raise
-
-        # Jika sampai sini, semua retry gagal
-        raise last_error
-
-    return wrapper
 
 
 @contextlib.contextmanager
@@ -225,11 +164,9 @@ def connect_network_safe(db_path: Path) -> sqlite3.Connection:
 from src.services.network_safe_db import (
     connect_network_safe,
     file_lock_context,
-    retry_on_locked
 )
 
 # Untuk READ operation (bisa tanpa lock):
-@retry_on_locked
 def read_data(db_path: Path):
     conn = connect_network_safe(db_path)
     try:
@@ -239,7 +176,6 @@ def read_data(db_path: Path):
         conn.close()
 
 # Untuk WRITE operation (HARUS dengan lock):
-@retry_on_locked
 def write_data(db_path: Path, rows):
     with file_lock_context(db_path, timeout=30):
         conn = connect_network_safe(db_path)

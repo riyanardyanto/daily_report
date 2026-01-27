@@ -61,12 +61,3 @@ def get_logger(name: str, *, level: int | None = None) -> logging.Logger:
     if level is not None:
         logger.setLevel(level)
     return logger
-
-
-def log_exception(logger: logging.Logger, message: str) -> None:
-    """Log the current exception with traceback, best-effort."""
-
-    try:
-        logger.exception(message)
-    except Exception:
-        pass
