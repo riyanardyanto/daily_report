@@ -39,6 +39,21 @@ def _main(page: ft.Page) -> None:
 
     # Keep the dashboard responsive.
     page.on_resize = safe_event(_on_resize, label="page.on_resize")
+
+    def _on_disconnect(_e=None):
+        try:
+            if hasattr(dashboard, "report_editor"):
+                dashboard.report_editor._stop_marquee()
+        except Exception:
+            pass
+
+    # Best-effort: stop background UI tasks when the client disconnects.
+    try:
+        if hasattr(page, "on_disconnect"):
+            page.on_disconnect = safe_event(_on_disconnect, label="page.on_disconnect")
+    except Exception:
+        pass
+
     _on_resize()
     page.update()
 

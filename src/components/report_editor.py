@@ -10,6 +10,7 @@ from src.components.history_table import HistoryTableDialog
 from src.components.qr_code_dialog import QrCodeDialog
 from src.components.report_list_view import ReportList
 from src.components.target_editor import TargetEditorDialog
+from src.services.config_service import get_marquee_config
 from src.services.history_db_adapter import save_report_history_sqlite
 from src.utils.helpers import data_app_path, load_settings_options
 from src.utils.theme import DANGER, INFO, ON_COLOR, PRIMARY, SUCCESS, WARNING
@@ -128,6 +129,31 @@ class ReportEditor(ft.Container):
         self.report_list = ReportList(expand=True)
         self._pending_draft_task = None
 
+        # Running (marquee) text (load from config)
+        try:
+            mc, _err = get_marquee_config()
+            msg = (
+                mc.message
+                if mc and getattr(mc, "message", None) is not None
+                else ("      JANGAN LUPA SAVE REPORT            <===<      ")
+            )
+            interval_ms = getattr(mc, "interval_ms", 150) if mc is not None else 150
+        except Exception:
+            msg = "      JANGAN LUPA SAVE REPORT            <===<      "
+            interval_ms = 150
+
+        self._running_msg = str(msg or "")
+        self._marquee_interval = float(int(interval_ms)) / 1000.0
+
+        self._running_text = ft.Text(
+            self._running_msg,
+            color=ft.Colors.BLACK,
+            size=8,
+            expand=True,
+            text_align=ft.TextAlign.LEFT,
+        )
+        self._marquee_task = None
+
         # Autosave draft (so it survives accidental close/restart)
         try:
             self.report_list.set_on_dirty(self._schedule_persist_draft)
@@ -143,7 +169,27 @@ class ReportEditor(ft.Container):
         super().__init__(
             content=ft.Column(
                 controls=[
-                    header,
+                    ft.Column(
+                        controls=[
+                            header,
+                            # Marquee / running text (full width)
+                            ft.Row(
+                                controls=[
+                                    ft.Container(
+                                        expand=True,
+                                        content=self._running_text,
+                                        bgcolor=ft.Colors.GREY_100,
+                                        height=20,
+                                        padding=ft.padding.symmetric(horizontal=4),
+                                        alignment=ft.alignment.center,
+                                    )
+                                ],
+                                expand=False,
+                                alignment=ft.MainAxisAlignment.CENTER,
+                            ),
+                        ],
+                        spacing=0,
+                    ),
                     self.report_list,
                 ],
                 expand=True,
@@ -161,6 +207,10 @@ class ReportEditor(ft.Container):
             pass
         try:
             self._sync_restore_enabled(getattr(self, "page", None))
+        except Exception:
+            pass
+        try:
+            self._start_marquee()
         except Exception:
             pass
 
@@ -1069,3 +1119,65 @@ class ReportEditor(ft.Container):
             get_metrics_rows=getattr(self, "_get_metrics_rows_cb", None),
             set_metrics_targets=getattr(self, "_set_metrics_targets_cb", None),
         ).show()
+
+    def _start_marquee(self) -> None:
+        """Start a background task that rotates the running text value."""
+        page = getattr(self, "page", None)
+        if getattr(self, "_marquee_task", None) is not None:
+            return
+
+        async def _runner():
+            try:
+                while True:
+                    await asyncio.sleep(0.15)
+                    try:
+                        s = str(getattr(self, "_running_msg", "") or "")
+                        if not s:
+                            continue
+                        s = s[1:] + s[0]
+                        self._running_msg = s
+                        try:
+                            self._running_text.value = s
+                            self._running_text.update()
+                        except Exception:
+                            # fallback to page update
+                            if page is not None:
+                                try:
+                                    page.update()
+                                except Exception:
+                                    pass
+                    except Exception:
+                        pass
+            except asyncio.CancelledError:
+                return
+
+        runner = getattr(page, "run_task", None)
+        if callable(runner):
+            try:
+                # Pass coroutine function (not coroutine object) as expected by run_task
+                self._marquee_task = runner(_runner)
+            except Exception:
+                self._marquee_task = None
+        else:
+            try:
+                # Fallback: schedule coroutine on default event loop
+                self._marquee_task = asyncio.create_task(_runner())
+            except Exception:
+                self._marquee_task = None
+
+    def _stop_marquee(self) -> None:
+        t = getattr(self, "_marquee_task", None)
+        if t is None:
+            return
+        try:
+            if hasattr(t, "cancel"):
+                t.cancel()
+        except Exception:
+            pass
+        self._marquee_task = None
+
+    def did_unmount(self):
+        try:
+            self._stop_marquee()
+        except Exception:
+            pass

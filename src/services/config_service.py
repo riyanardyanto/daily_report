@@ -20,6 +20,12 @@ history_max_rows = 500
 qr_cache_size = 20
 spa_cache_ttl_seconds = 15
 
+[MARQUEE]
+# Running text shown in the editor header. Surrounding spaces are kept as-is.
+message = "      JANGAN LUPA SAVE REPORT            <===<      "
+# Interval between animation frames in milliseconds
+interval_ms = 150
+
 [SPA_SERVICE]
 username = ""
 password = ""
@@ -65,7 +71,19 @@ def ensure_default_config() -> tuple[Path, bool, str | None]:
         (path, created_template, error_message)
     """
     path = get_config_path()
+    # If file exists, ensure MARQUEE section is present; if missing, append defaults.
     if path.exists():
+        try:
+            txt = path.read_text(encoding="utf-8")
+            if "[MARQUEE]" not in txt:
+                marquee_defaults = '\n[MARQUEE]\n# Running text shown in the editor header. Surrounding spaces are kept as-is.\nmessage = "   JANGAN LUPA SAVE REPORT   "\n# Interval between animation frames in milliseconds\ninterval_ms = 150\n'
+                try:
+                    path.write_text(txt + marquee_defaults, encoding="utf-8")
+                except Exception:
+                    # best-effort: ignore append failures
+                    pass
+        except Exception:
+            pass
         return path, False, None
 
     # Migration: older versions stored config under per-user AppData.
@@ -156,6 +174,46 @@ class HistorySyncConfig:
 class HistoryStorageConfig:
     mode: str = "local_sync"
     shared_db_path: str = ""
+
+
+@dataclass(frozen=True)
+class MarqueeConfig:
+    message: str = "      JANGAN LUPA SAVE REPORT            <===<      "
+    interval_ms: int = 150
+
+
+def get_marquee_config() -> tuple[MarqueeConfig, str | None]:
+    """Read marquee settings from [MARQUEE] section in config.toml.
+
+    Returns:
+        (MarqueeConfig, error_message)
+    """
+    cfg, _path, err = load_config_toml()
+    if err:
+        return MarqueeConfig(), err
+
+    sec = cfg.get("MARQUEE") if isinstance(cfg, dict) else None
+    if not isinstance(sec, dict):
+        sec = {}
+
+    def _s(key: str, default: str = "") -> str:
+        try:
+            return str(sec.get(key, default) or "")
+        except Exception:
+            return default
+
+    def _i(key: str, default: int = 150) -> int:
+        try:
+            return int(sec.get(key, default))
+        except Exception:
+            return default
+
+    message = _s("message", MarqueeConfig.message)
+    interval_ms = _i("interval_ms", MarqueeConfig.interval_ms)
+    if interval_ms <= 0:
+        interval_ms = MarqueeConfig.interval_ms
+
+    return MarqueeConfig(message=message, interval_ms=interval_ms), None
 
 
 def get_history_storage_config() -> tuple[HistoryStorageConfig, str | None]:
