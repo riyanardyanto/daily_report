@@ -12,7 +12,7 @@ class MetricsTable(ft.Container):
             label_style=ft.TextStyle(size=18),
             label_position=ft.LabelPosition.LEFT,
             # width=130,
-            height=22,
+            height=18,
             value=True,
             active_track_color=SWITCH_ACTIVE,
         )
@@ -78,7 +78,13 @@ class MetricsTable(ft.Container):
                         ft.Text(
                             "Target vs Actual", size=12, weight=ft.FontWeight.W_600
                         ),
-                        self.include_table_switch,
+                        ft.Column(
+                            controls=[
+                                self.include_table_switch,
+                            ],
+                            spacing=6,
+                            horizontal_alignment=ft.CrossAxisAlignment.END,
+                        ),
                     ],
                     spacing=10,
                     vertical_alignment=ft.CrossAxisAlignment.CENTER,

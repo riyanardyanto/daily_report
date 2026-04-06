@@ -22,6 +22,8 @@ class ReportEditor(ft.Container):
         self,
         get_report_table_text=None,
         get_include_table=None,
+        get_stops_line_table_text=None,
+        get_include_line_stop=None,
         get_metrics_rows=None,
         set_metrics_targets=None,
         get_selected_shift=None,
@@ -35,6 +37,8 @@ class ReportEditor(ft.Container):
         kwargs.setdefault("expand", True)
         self._get_report_table_text_cb = get_report_table_text
         self._get_include_table_cb = get_include_table
+        self._get_stops_line_table_text_cb = get_stops_line_table_text
+        self._get_include_line_stop_cb = get_include_line_stop
         self._get_metrics_rows_cb = get_metrics_rows
         self._set_metrics_targets_cb = set_metrics_targets
         self._get_selected_shift_cb = get_selected_shift
@@ -1082,6 +1086,7 @@ class ReportEditor(ft.Container):
             report_text = ""
 
         payload = report_text
+        payload_sections: list[str] = []
         include_table = True
         try:
             if callable(getattr(self, "_get_include_table_cb", None)):
@@ -1095,9 +1100,37 @@ class ReportEditor(ft.Container):
                 replaced_table_text = table_text.replace("\n", "`\n`")
                 formatted_table_text = f"`{replaced_table_text}`".strip()
                 if table_text:
-                    payload = f"{formatted_table_text}\n\n{report_text}".strip()
+                    payload_sections.append(
+                        f"*=== TARGET vs ACTUAL ===*\n{formatted_table_text}".strip()
+                    )
             except Exception:
                 pass
+
+        include_line_stop = True
+        try:
+            if callable(getattr(self, "_get_include_line_stop_cb", None)):
+                include_line_stop = bool(self._get_include_line_stop_cb())
+        except Exception:
+            include_line_stop = True
+
+        if include_line_stop and callable(
+            getattr(self, "_get_stops_line_table_text_cb", None)
+        ):
+            try:
+                stops_table_text: str = self._get_stops_line_table_text_cb()
+                replaced_stops_text = stops_table_text.replace("\n", "`\n`")
+                formatted_stops_text = f"`{replaced_stops_text}`".strip()
+                if stops_table_text:
+                    payload_sections.append(
+                        f"*=== LINE STOP SUMMARY ===*\n{formatted_stops_text}".strip()
+                    )
+            except Exception:
+                pass
+
+        if report_text:
+            payload_sections.append(f"*=== DETAIL REPORT ===*\n{report_text}".strip())
+        if payload_sections:
+            payload = "\n\n".join(payload_sections).strip()
 
         meta_line = (
             f"*{func_location.upper()} {link_up[-2:]} | {date_field} | {shift}*"

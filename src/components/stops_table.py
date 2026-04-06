@@ -1,5 +1,7 @@
 import flet as ft
 
+from src.utils.theme import SWITCH_ACTIVE
+
 
 class StopsTable(ft.Container):
     """Reusable stops table component."""
@@ -13,6 +15,15 @@ class StopsTable(ft.Container):
                 with the row list when a row is double-clicked/tapped.
         """
         self.on_row_double_tap = on_row_double_tap
+        self.include_line_stop_switch = ft.Switch(
+            label="Include line stop",
+            label_style=ft.TextStyle(size=18),
+            label_position=ft.LabelPosition.LEFT,
+            height=18,
+            value=True,
+            active_track_color=SWITCH_ACTIVE,
+        )
+
         # build the DataTable (headers centered for Target/Actual and numeric cells centered)
         table = ft.DataTable(
             columns=[
@@ -32,12 +43,13 @@ class StopsTable(ft.Container):
             ],
             border=ft.border.all(1, ft.Colors.BLACK12),
             heading_row_color=ft.Colors.BLUE_GREY_50,
-            data_row_max_height=50,
-            data_row_min_height=28,
+            data_row_max_height=40,
+            data_row_min_height=22,
             heading_row_height=34,
             vertical_lines=ft.BorderSide(1, ft.Colors.BLACK12),
             horizontal_lines=ft.BorderSide(1, ft.Colors.BLACK12),
         )
+        self._table = table
 
         # wrap the DataTable into a scrollable container so large datasets can scroll
         # Use a scrolling container (supported across flet versions) with fixed height
@@ -54,7 +66,15 @@ class StopsTable(ft.Container):
 
         content = ft.Column(
             [
-                ft.Text("Stop Details", size=12, weight=ft.FontWeight.W_600),
+                ft.Row(
+                    controls=[
+                        ft.Text("Stop Details", size=12, weight=ft.FontWeight.W_600),
+                        self.include_line_stop_switch,
+                    ],
+                    spacing=10,
+                    vertical_alignment=ft.CrossAxisAlignment.CENTER,
+                    alignment=ft.MainAxisAlignment.SPACE_BETWEEN,
+                ),
                 table_container,
             ],
             horizontal_alignment=ft.CrossAxisAlignment.STRETCH,
@@ -176,6 +196,96 @@ class StopsTable(ft.Container):
                 self.update()
             except Exception:
                 pass
+
+    def _extract_cell_text(self, cell: ft.DataCell) -> str:
+        try:
+            c = getattr(cell, "content", None)
+            if isinstance(c, ft.Text):
+                return str(c.value or "").strip()
+            if isinstance(c, ft.Container):
+                inner = getattr(c, "content", None)
+                if isinstance(inner, ft.Text):
+                    return str(inner.value or "").strip()
+                if isinstance(inner, ft.GestureDetector):
+                    nested = getattr(inner, "content", None)
+                    if isinstance(nested, ft.Container):
+                        nested_text = getattr(nested, "content", None)
+                        if isinstance(nested_text, ft.Text):
+                            return str(nested_text.value or "").strip()
+                    if isinstance(nested, ft.Text):
+                        return str(nested.value or "").strip()
+                return str(inner).strip() if inner is not None else ""
+            if isinstance(c, ft.GestureDetector):
+                inner = getattr(c, "content", None)
+                if isinstance(inner, ft.Container):
+                    nested_text = getattr(inner, "content", None)
+                    if isinstance(nested_text, ft.Text):
+                        return str(nested_text.value or "").strip()
+                if isinstance(inner, ft.Text):
+                    return str(inner.value or "").strip()
+                return str(inner).strip() if inner is not None else ""
+            return str(c).strip() if c is not None else ""
+        except Exception:
+            return ""
+
+    def get_rows_data(self) -> list[tuple[str, str, str, str]]:
+        """Return current table rows as (line, issue, stops, downtime)."""
+        out: list[tuple[str, str, str, str]] = []
+        try:
+            table = getattr(self, "_table", None)
+            if table is None:
+                return out
+
+            for r in list(getattr(table, "rows", None) or []):
+                row_cells = []
+                for cell in list(getattr(r, "cells", None) or []):
+                    row_cells.append(self._extract_cell_text(cell))
+                if row_cells:
+                    line = str(row_cells[0]) if len(row_cells) > 0 else ""
+                    issue = str(row_cells[1]) if len(row_cells) > 1 else ""
+                    stops = str(row_cells[2]) if len(row_cells) > 2 else ""
+                    downtime = str(row_cells[3]) if len(row_cells) > 3 else ""
+                    out.append((line, issue, stops, downtime))
+        except Exception:
+            return []
+        return out
+
+    def format_line_stops_tabulated(self, tablefmt: str = "pretty") -> str:
+        """Return tabulate text for aggregated stop count per line."""
+        try:
+            from tabulate import tabulate
+
+            rows = self.get_rows_data()
+            if not rows:
+                return ""
+
+            by_line: dict[str, float] = {}
+            for line, _issue, stops, _downtime in rows:
+                line_key = str(line or "").strip() or "-"
+                try:
+                    num = float(str(stops).replace(",", "").strip() or "0")
+                except Exception:
+                    num = 0.0
+                by_line[line_key] = float(by_line.get(line_key, 0.0) + num)
+
+            table_rows: list[list[str]] = []
+            # Show highest stop counts first to make the summary easier to scan.
+            sorted_items = sorted(by_line.items(), key=lambda item: (-item[1], item[0]))
+            for line_key, total in sorted_items:
+                total_str = str(int(total)) if float(total).is_integer() else f"{total:.2f}"
+                table_rows.append([line_key, total_str])
+
+            return str(
+                tabulate(
+                    table_rows,
+                    headers=["Line", "Stops"],
+                    tablefmt=tablefmt,
+                    numalign="left",
+                    stralign="left",
+                )
+            ).strip()
+        except Exception:
+            return ""
 
     def _on_cell_double_tap(self, e, row: list):
         # call user-provided callback if set

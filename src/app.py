@@ -107,6 +107,8 @@ class DashboardApp(ft.Container):
             expand=True,
             get_report_table_text=self._get_metrics_table_text,
             get_include_table=self._get_include_table,
+            get_stops_line_table_text=self._get_stops_line_table_text,
+            get_include_line_stop=self._get_include_line_stop,
             get_metrics_rows=self._get_metrics_rows,
             set_metrics_targets=self._set_metrics_targets,
             get_selected_shift=self._get_selected_shift,
@@ -338,6 +340,22 @@ class DashboardApp(ft.Container):
         try:
             sw = getattr(
                 getattr(self, "metrics_table", None), "include_table_switch", None
+            )
+            return bool(getattr(sw, "value", True))
+        except Exception:
+            return True
+
+    def _get_stops_line_table_text(self) -> str:
+        """Return stop count per line as tabulate text (for QR payload)."""
+        try:
+            return self.stops_table.format_line_stops_tabulated(tablefmt="pretty")
+        except Exception:
+            return ""
+
+    def _get_include_line_stop(self) -> bool:
+        try:
+            sw = getattr(
+                getattr(self, "stops_table", None), "include_line_stop_switch", None
             )
             return bool(getattr(sw, "value", True))
         except Exception:

@@ -94,9 +94,16 @@ def get_data_app_dir(folder_name: str = "data_app", create: bool = True) -> Path
             "data_app/targets",
         )
 
+        # These paths must always be stored locally per-computer, even when a
+        # portable folder exists next to the exe (e.g. in a shared network folder).
+        # Draft and history data is session-specific to the computer running the app.
+        always_local_prefixes = ("data_app/history",)
+
         if getattr(sys, "frozen", False):
             if any(folder_key.startswith(p) for p in portable_prefixes):
                 data_dir = portable_dir
+            elif any(folder_key.startswith(p) for p in always_local_prefixes):
+                data_dir = _user_data_root() / folder_name
             else:
                 # Backward compatibility: if a portable folder already exists next
                 # to the exe (and has any contents), keep using it.
