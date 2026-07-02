@@ -4,8 +4,23 @@ from typing import Any
 
 import flet as ft
 
-from src.utils.theme import DANGER, ON_COLOR, PRIMARY, SECONDARY, SUCCESS
+from src.utils.theme import (
+    DANGER,
+    ON_COLOR,
+    PRIMARY,
+    SUCCESS,
+    SURFACE,
+    SURFACE_ALT,
+    TEXT_MUTED,
+    TEXT_SECONDARY,
+    WARNING,
+)
 from src.utils.ui_helpers import open_dialog
+
+# Detail description texts that are fixed / cannot be edited by the user.
+# These are PDT-specific template prefixes inserted from the card menu.
+# Stored as stripped strings; detection uses .strip() to be space-agnostic.
+_DETAIL_READONLY_TEXTS: frozenset[str] = frozenset({"Brand Change", "Follow Up"})
 
 
 class ReportList(ft.ReorderableListView):
@@ -271,11 +286,124 @@ class ReportList(ft.ReorderableListView):
         kwargs.setdefault("expand", True)
         self._last_cleared_state = None
         self._on_dirty = None
+        self._active_menu_dlg: ft.AlertDialog | None = None
         super().__init__(
             padding=ft.padding.symmetric(vertical=0, horizontal=0),
             on_reorder=self._on_reorder,
             **kwargs,
         )
+
+    def close_active_menu(self) -> None:
+        """Programmatically close any open card menu dialog (call on window blur/minimize)."""
+        try:
+            dlg = getattr(self, "_active_menu_dlg", None)
+            if dlg is None:
+                return
+            page = getattr(self, "page", None)
+            if page is None:
+                return
+            dlg.open = False
+            self._active_menu_dlg = None
+            try:
+                page.update()
+            except Exception:
+                pass
+        except Exception:
+            pass
+
+    def _show_card_menu(
+        self,
+        page: ft.Page | None,
+        items: list[tuple[str, ft.Icon, bool, object]],
+        title: str | None = None,
+    ) -> None:
+        """Open a styled AlertDialog acting as a popup menu.
+
+        items is a list of (label, icon, disabled, on_click_callback).
+        title is optional text to display at the top of the menu (e.g., issue text).
+        """
+        if page is None:
+            return
+
+        # Close any previously open menu first.
+        self.close_active_menu()
+
+        def _close(e=None):
+            try:
+                dlg.open = False
+                self._active_menu_dlg = None
+                page.update()
+            except Exception:
+                pass
+
+        menu_rows: list[ft.Control] = []
+
+        # Add title/header if provided
+        if title:
+            title_text = ft.Text(
+                str(title).strip(),
+                size=12,
+                weight=ft.FontWeight.BOLD,
+                color=TEXT_SECONDARY,
+                no_wrap=False,
+            )
+            menu_rows.append(title_text)
+            menu_rows.append(ft.Divider(height=6, color=ft.Colors.BLUE_GREY_100))
+
+        for label, icon, disabled, callback in items:
+            cb = callback  # capture
+
+            def _make_handler(c, close_fn):
+                def _handler(e=None):
+                    close_fn()
+                    if callable(c):
+                        try:
+                            c()
+                        except Exception:
+                            pass
+
+                return _handler
+
+            row = ft.Container(
+                content=ft.Row(
+                    [
+                        icon,
+                        ft.Text(
+                            label,
+                            size=13,
+                            color="#374151" if not disabled else TEXT_MUTED,
+                        ),
+                    ],
+                    spacing=10,
+                    vertical_alignment=ft.CrossAxisAlignment.CENTER,
+                ),
+                padding=ft.padding.symmetric(horizontal=14, vertical=10),
+                border_radius=8,
+                ink=not disabled,
+                bgcolor=ft.Colors.TRANSPARENT,
+                on_click=None if disabled else _make_handler(cb, _close),
+            )
+            if disabled:
+                row.opacity = 0.4
+            menu_rows.append(row)
+
+        dlg = ft.AlertDialog(
+            modal=False,
+            bgcolor=ft.Colors.WHITE,
+            shape=ft.RoundedRectangleBorder(radius=10),
+            content_padding=ft.padding.symmetric(horizontal=4, vertical=8),
+            content=ft.Column(
+                controls=menu_rows,
+                spacing=0,
+                tight=True,
+                width=240,
+            ),
+            on_dismiss=lambda e: setattr(self, "_active_menu_dlg", None),
+        )
+        self._active_menu_dlg = dlg
+        from src.utils.ui_helpers import open_dialog
+
+        open_dialog(page, dlg)
 
     def _on_reorder(self, e: ft.OnReorderEvent):
         old_index = e.old_index
@@ -304,17 +432,25 @@ class ReportList(ft.ReorderableListView):
 
         If focus=True, focus its Description field.
         """
-        idx = len(self.controls)
         issue_tf_ref: ft.Ref[ft.TextField] = ft.Ref()
 
-        self.controls.append(
-            self._make_issue_card(
-                str(text),
-                index=idx,
-                key=f"item-{uuid.uuid4()}",
-                issue_textfield_ref=issue_tf_ref,
-            )
+        new_prio = self._get_priority(text)
+
+        # Find the first card with priority > new_prio to insert before it.
+        insert_idx = len(self.controls)
+        for idx, card in enumerate(self.controls):
+            if self._get_card_priority(card) > new_prio:
+                insert_idx = idx
+                break
+
+        new_card = self._make_issue_card(
+            str(text),
+            index=insert_idx,
+            key=f"item-{uuid.uuid4()}",
+            issue_textfield_ref=issue_tf_ref,
         )
+
+        self.controls.insert(insert_idx, new_card)
         self.update()
         self._mark_dirty()
 
@@ -332,6 +468,8 @@ class ReportList(ft.ReorderableListView):
         """Append a new detail (ExpansionTile) into an issue card's Column.
 
         If focus=True, focus the new Detail Description field.
+        Pre-filled details (non-empty text) start expanded so the TextField
+        is immediately interactive without the collapsed header intercepting taps.
         """
         try:
             if len(issue_column.controls) == 1:
@@ -339,11 +477,16 @@ class ReportList(ft.ReorderableListView):
                     ft.Divider(height=5, color=ft.Colors.TRANSPARENT)
                 )
 
+            # Expand immediately when text is pre-filled so the user can
+            # click / edit the TextField without the collapsed tile header
+            # intercepting the tap event for toggling expansion.
+            start_expanded = bool(str(text).strip())
+
             detail_tf_ref: ft.Ref[ft.TextField] = ft.Ref()
             detail_tile = self._make_detail_description_for_card(
                 issue_column,
                 str(text),
-                initially_expanded=False,
+                initially_expanded=start_expanded,
                 detail_textfield_ref=detail_tf_ref,
             )
             issue_column.controls.append(detail_tile)
@@ -772,22 +915,29 @@ class ReportList(ft.ReorderableListView):
         return ft.Card(
             ref=card_ref,
             key=key,
-            margin=ft.margin.only(top=5, bottom=5, left=0, right=0),
-            color=ft.Colors.WHITE,
-            shape=ft.RoundedRectangleBorder(radius=10),
+            margin=ft.margin.only(top=2, bottom=2, left=0, right=0),
+            color=SURFACE,
+            shape=ft.RoundedRectangleBorder(radius=12),
             clip_behavior=ft.ClipBehavior.ANTI_ALIAS,
-            elevation=4,
-            shadow_color=self._get_color(index),
+            elevation=3,
+            shadow_color=f"#40{self._get_color(text, index)[1:]}"
+            if self._get_color(text, index).startswith("#")
+            else self._get_color(text, index),
             content=ft.Container(
                 border=ft.Border(
-                    left=ft.BorderSide(4, self._get_color(index)),
-                    top=ft.BorderSide(1, ft.Colors.BLACK26),
-                    right=ft.BorderSide(1, ft.Colors.BLACK26),
-                    bottom=ft.BorderSide(1, ft.Colors.BLACK26),
+                    left=ft.BorderSide(5, self._get_color(text, index)),
+                    top=ft.BorderSide(1, "#E2E8F0"),
+                    right=ft.BorderSide(1, "#E2E8F0"),
+                    bottom=ft.BorderSide(1, "#E2E8F0"),
                 ),
-                border_radius=10,
+                border_radius=ft.border_radius.only(
+                    top_left=0,
+                    bottom_left=0,
+                    top_right=12,
+                    bottom_right=12,
+                ),
                 clip_behavior=ft.ClipBehavior.ANTI_ALIAS,
-                padding=ft.padding.only(left=8, right=30, top=8, bottom=8),
+                padding=ft.padding.only(left=8, right=24, top=7, bottom=7),
                 content=card_column,
             ),
         )
@@ -801,20 +951,8 @@ class ReportList(ft.ReorderableListView):
         *,
         issue_textfield_ref: ft.Ref[ft.TextField] | None = None,
     ):
-        add_detail_item = ft.PopupMenuItem(
-            content=ft.Row(
-                [
-                    ft.Icon(ft.Icons.ADD, color=SUCCESS),
-                    ft.Text("Add detail"),
-                ]
-            ),
-            disabled=(str(text or "").strip() == ""),
-            on_click=lambda e, r=column_ref: (
-                self.append_item_detail(r.current)
-                if getattr(r, "current", None) is not None
-                else None
-            ),
-        )
+        is_read_only = str(text).strip() in {"PDT", "TRL", "PROPOSE NEXT ACTION"}
+        _add_detail_disabled = [str(text or "").strip() == ""]
 
         def _sync_add_detail_enabled(e: ft.ControlEvent | None = None):
             try:
@@ -825,18 +963,89 @@ class ReportList(ft.ReorderableListView):
                     current_value = getattr(tf, "value", "") if tf is not None else ""
                 else:
                     current_value = ""
-
-                add_detail_item.disabled = str(current_value or "").strip() == ""
-                try:
-                    add_detail_item.update()
-                except Exception:
-                    pass
+                _add_detail_disabled[0] = str(current_value or "").strip() == ""
             except Exception:
                 pass
 
         def _on_issue_text_change(e: ft.ControlEvent | None = None):
             _sync_add_detail_enabled(e)
             self._mark_dirty()
+
+        def _do_open_issue_menu(e):
+            page = getattr(e, "page", None) or getattr(self, "page", None)
+            col = getattr(column_ref, "current", None)
+            card = getattr(card_ref, "current", None)
+
+            is_pdt = str(text or "").strip().upper() == "PDT"
+
+            if is_pdt:
+                self._show_card_menu(
+                    page,
+                    [
+                        (
+                            "Brand Change Detail",
+                            ft.Icon(
+                                ft.Icons.SWAP_HORIZ_ROUNDED, color=SUCCESS, size=14
+                            ),
+                            False,
+                            lambda: (
+                                self.append_item_detail(col, text="Brand Change")
+                                if col is not None
+                                else None
+                            ),
+                        ),
+                        (
+                            "Follow Up Detail",
+                            ft.Icon(
+                                ft.Icons.TRACK_CHANGES_ROUNDED, color=SUCCESS, size=14
+                            ),
+                            False,
+                            lambda: (
+                                self.append_item_detail(col, text="Follow Up")
+                                if col is not None
+                                else None
+                            ),
+                        ),
+                        (
+                            "Hapus",
+                            ft.Icon(ft.Icons.DELETE_ROUNDED, color=DANGER, size=14),
+                            False,
+                            lambda: (
+                                self.confirm_remove_issue(page, card)
+                                if card is not None
+                                else None
+                            ),
+                        ),
+                    ],
+                    title=text,
+                )
+            else:
+                self._show_card_menu(
+                    page,
+                    [
+                        (
+                            "Add detail",
+                            ft.Icon(ft.Icons.ADD, color=SUCCESS, size=14),
+                            _add_detail_disabled[0],
+                            lambda: (
+                                self.append_item_detail(col)
+                                if col is not None
+                                else None
+                            ),
+                        ),
+                        (
+                            "Hapus",
+                            ft.Icon(ft.Icons.DELETE_ROUNDED, color=DANGER, size=14),
+                            False,
+                            lambda: (
+                                self.confirm_remove_issue(page, card)
+                                if card is not None
+                                else None
+                            ),
+                        ),
+                    ],
+                    title=text,
+                )
 
         return ft.Container(
             content=ft.Row(
@@ -845,52 +1054,42 @@ class ReportList(ft.ReorderableListView):
                         ref=issue_textfield_ref,
                         value=str(text),
                         label="Issue",
-                        hint_text="Issue description...",
+                        hint_text="Deskripsi issue...",
+                        read_only=is_read_only,
                         label_style=ft.TextStyle(
                             size=9,
-                            bgcolor=ft.Colors.WHITE,
+                            color=TEXT_MUTED,
                         ),
-                        text_size=13,
+                        text_size=12,
+                        text_style=ft.TextStyle(
+                            weight=ft.FontWeight.W_500,
+                            color="#0F172A",
+                        ),
                         text_align=ft.TextAlign.LEFT,
                         multiline=False,
                         border=ft.InputBorder.OUTLINE,
-                        border_color=ft.Colors.BLACK12,
+                        border_color="#CBD5E1",
+                        focused_border_color=PRIMARY,
                         border_radius=8,
-                        bgcolor=ft.Colors.WHITE,
+                        bgcolor=SURFACE,
+                        fill_color=SURFACE,
                         expand=True,
-                        height=34,
+                        height=36,
                         content_padding=ft.padding.symmetric(horizontal=10, vertical=8),
                         on_change=_on_issue_text_change,
-                        on_blur=_on_issue_text_change,
                     ),
-                    ft.Container(
+                    ft.IconButton(
+                        icon=ft.Icons.MORE_VERT,
+                        icon_color=TEXT_MUTED,
+                        icon_size=18,
+                        tooltip="Opsi",
                         width=34,
                         height=34,
-                        alignment=ft.alignment.center,
-                        content=ft.PopupMenuButton(
-                            width=34,
-                            height=34,
-                            icon=ft.Icon(ft.Icons.MORE_VERT, size=18, color=SECONDARY),
-                            padding=ft.padding.all(0),
-                            items=[
-                                add_detail_item,
-                                ft.PopupMenuItem(
-                                    content=ft.Row(
-                                        [
-                                            ft.Icon(ft.Icons.REMOVE, color=DANGER),
-                                            ft.Text("Remove"),
-                                        ]
-                                    ),
-                                    on_click=lambda e, r=card_ref: (
-                                        self.confirm_remove_issue(
-                                            e.control.page, r.current
-                                        )
-                                        if getattr(r, "current", None) is not None
-                                        else None
-                                    ),
-                                ),
-                            ],
+                        padding=ft.padding.all(0),
+                        style=ft.ButtonStyle(
+                            shape=ft.RoundedRectangleBorder(radius=6),
                         ),
+                        on_click=_do_open_issue_menu,
                     ),
                 ],
                 spacing=0,
@@ -913,21 +1112,11 @@ class ReportList(ft.ReorderableListView):
         )
 
         tile_ref: ft.Ref[ft.ExpansionTile] = ft.Ref()
+        _add_action_disabled = [str(text or "").strip() == ""]
 
-        add_action_item = ft.PopupMenuItem(
-            content=ft.Row(
-                [
-                    ft.Icon(ft.Icons.ADD, color=SUCCESS),
-                    ft.Text("Add action"),
-                ]
-            ),
-            disabled=(str(text or "").strip() == ""),
-            on_click=lambda e, r=tile_ref, col=issue_column: (
-                self.append_action(r.current, issue_column=col)
-                if getattr(r, "current", None) is not None
-                else None
-            ),
-        )
+        # Detect read-only template texts (e.g. "Brand Change", "Follow Up")
+        # Use .strip() so it matches regardless of trailing spaces in stored text.
+        is_detail_read_only = str(text).strip() in _DETAIL_READONLY_TEXTS
 
         def _sync_add_action_enabled(e: ft.ControlEvent | None = None):
             try:
@@ -936,12 +1125,7 @@ class ReportList(ft.ReorderableListView):
                 else:
                     tf = getattr(_detail_tf_ref, "current", None)
                     current_value = getattr(tf, "value", "") if tf is not None else ""
-
-                add_action_item.disabled = str(current_value or "").strip() == ""
-                try:
-                    add_action_item.update()
-                except Exception:
-                    pass
+                _add_action_disabled[0] = str(current_value or "").strip() == ""
             except Exception:
                 pass
 
@@ -949,72 +1133,99 @@ class ReportList(ft.ReorderableListView):
             _sync_add_action_enabled(e)
             self._mark_dirty()
 
+        def _do_open_detail_menu(e):
+            page = getattr(e, "page", None) or getattr(self, "page", None)
+            tile = getattr(tile_ref, "current", None)
+            self._show_card_menu(
+                page,
+                [
+                    (
+                        "Add action",
+                        ft.Icon(ft.Icons.ADD, color=SUCCESS, size=14),
+                        _add_action_disabled[0],
+                        lambda: (
+                            self.append_action(tile, issue_column=issue_column)
+                            if tile is not None
+                            else None
+                        ),
+                    ),
+                    (
+                        "Hapus",
+                        ft.Icon(ft.Icons.DELETE_ROUNDED, color=DANGER, size=14),
+                        False,
+                        lambda: (
+                            self.confirm_remove_detail(page, issue_column, tile)
+                            if tile is not None
+                            else None
+                        ),
+                    ),
+                ],
+                title=text,
+            )
+
         return ft.ExpansionTile(
             ref=tile_ref,
             affinity=ft.TileAffinity.LEADING,
             initially_expanded=initially_expanded,
             maintain_state=True,
-            collapsed_text_color=ft.Colors.BLUE_800,
-            text_color=ft.Colors.BLUE_200,
-            tile_padding=ft.padding.only(left=0, right=0, top=0, bottom=0),
-            controls_padding=ft.padding.only(left=0, right=0, top=0, bottom=5),
+            collapsed_text_color="#3B82F6",
+            text_color="#60A5FA",
+            bgcolor=SURFACE_ALT,
+            collapsed_bgcolor=SURFACE_ALT,
+            tile_padding=ft.padding.only(left=0, right=4, top=0, bottom=0),
+            controls_padding=ft.padding.only(left=0, right=0, top=0, bottom=3),
+            shape=ft.RoundedRectangleBorder(radius=8),
             on_change=lambda e, r=tile_ref: self._on_detail_tile_change(e, r),
             title=ft.Row(
                 controls=[
                     ft.TextField(
                         ref=_detail_tf_ref,
                         value=str(text),
-                        label="Detail description",
+                        label="Detail deskripsi",
+                        read_only=is_detail_read_only,
                         label_style=ft.TextStyle(
                             size=9,
-                            bgcolor=ft.Colors.WHITE,
+                            color=TEXT_MUTED,
                         ),
-                        text_size=12,
+                        text_size=11,
+                        text_style=ft.TextStyle(
+                            color=TEXT_SECONDARY,
+                            weight=ft.FontWeight.W_600
+                            if is_detail_read_only
+                            else ft.FontWeight.NORMAL,
+                        ),
                         text_align=ft.TextAlign.LEFT,
                         multiline=False,
                         border=ft.InputBorder.OUTLINE,
-                        border_color=ft.Colors.BLACK12,
+                        border_color="#CBD5E1",
+                        focused_border_color=PRIMARY,
                         border_radius=8,
-                        bgcolor=ft.Colors.WHITE,
+                        bgcolor="#F1F5F9" if is_detail_read_only else SURFACE,
+                        fill_color="#F1F5F9" if is_detail_read_only else SURFACE,
                         expand=True,
                         height=30,
                         content_padding=ft.padding.only(
                             left=10, right=0, top=0, bottom=20
                         ),
-                        on_change=_on_detail_text_change,
-                        on_blur=_on_detail_text_change,
+                        on_change=_on_detail_text_change
+                        if not is_detail_read_only
+                        else None,
                     ),
-                    ft.Container(
-                        width=30,
-                        height=30,
-                        alignment=ft.alignment.center,
-                        content=ft.PopupMenuButton(
-                            width=30,
-                            height=30,
-                            icon=ft.Icon(ft.Icons.MORE_VERT, size=18, color=SECONDARY),
-                            padding=ft.padding.all(0),
-                            items=[
-                                add_action_item,
-                                ft.PopupMenuItem(
-                                    content=ft.Row(
-                                        [
-                                            ft.Icon(ft.Icons.REMOVE, color=DANGER),
-                                            ft.Text("Remove"),
-                                        ]
-                                    ),
-                                    on_click=lambda e, r=tile_ref, col=issue_column: (
-                                        self.confirm_remove_detail(
-                                            e.control.page, col, r.current
-                                        )
-                                        if getattr(r, "current", None) is not None
-                                        else None
-                                    ),
-                                ),
-                            ],
+                    ft.IconButton(
+                        icon=ft.Icons.MORE_VERT,
+                        icon_color=TEXT_MUTED,
+                        icon_size=16,
+                        tooltip="Opsi",
+                        width=28,
+                        height=28,
+                        padding=ft.padding.only(left=0, right=0, top=0, bottom=0),
+                        style=ft.ButtonStyle(
+                            shape=ft.RoundedRectangleBorder(radius=6),
                         ),
+                        on_click=_do_open_detail_menu,
                     ),
                 ],
-                spacing=4,
+                spacing=0,
                 alignment=ft.MainAxisAlignment.START,
                 vertical_alignment=ft.CrossAxisAlignment.CENTER,
             ),
@@ -1057,81 +1268,118 @@ class ReportList(ft.ReorderableListView):
         action_textfield_ref: ft.Ref[ft.TextField] | None = None,
     ):
         action_ref: ft.Ref[ft.Container] = ft.Ref()
+
+        def _do_open_action_menu(e):
+            page = getattr(e, "page", None) or getattr(self, "page", None)
+            tile = (
+                detail_tile
+                if detail_tile is not None
+                else getattr(tile_ref, "current", None)
+            )
+            ac = getattr(action_ref, "current", None)
+            self._show_card_menu(
+                page,
+                [
+                    (
+                        "Hapus",
+                        ft.Icon(ft.Icons.DELETE_ROUNDED, color=DANGER, size=14),
+                        False,
+                        lambda: (
+                            self.confirm_remove_action(page, tile, ac)
+                            if tile is not None and ac is not None
+                            else None
+                        ),
+                    ),
+                ],
+                title=text,
+            )
+
         return ft.Container(
             ref=action_ref,
-            padding=ft.padding.only(left=60, right=0, top=2, bottom=2),
+            padding=ft.padding.only(left=48, right=4, top=2, bottom=2),
+            bgcolor=SURFACE,
+            border_radius=6,
             content=ft.Row(
                 [
                     ft.TextField(
                         ref=action_textfield_ref,
                         value=str(text),
-                        label="Action description",
+                        label="Action yang dilakukan",
                         label_style=ft.TextStyle(
                             size=9,
-                            bgcolor=ft.Colors.WHITE,
+                            color=TEXT_MUTED,
                         ),
-                        text_size=11,
+                        text_size=10,
+                        text_style=ft.TextStyle(color=TEXT_SECONDARY),
                         text_align=ft.TextAlign.LEFT,
                         multiline=False,
                         border=ft.InputBorder.OUTLINE,
-                        border_color=ft.Colors.BLACK12,
+                        border_color="#CBD5E1",
+                        focused_border_color=SUCCESS,
                         border_radius=8,
-                        bgcolor=ft.Colors.WHITE,
+                        bgcolor=SURFACE,
+                        fill_color=SURFACE,
                         expand=True,
-                        height=30,
+                        height=28,
                         content_padding=ft.padding.only(
                             left=10, right=0, top=0, bottom=20
                         ),
                         on_change=lambda _e: self._mark_dirty(),
-                        on_blur=lambda _e: self._mark_dirty(),
                     ),
-                    ft.Container(
-                        width=30,
-                        height=30,
-                        alignment=ft.alignment.center,
-                        content=ft.PopupMenuButton(
-                            width=30,
-                            height=30,
-                            icon=ft.Icon(ft.Icons.MORE_VERT, size=18, color=SECONDARY),
-                            padding=ft.padding.all(0),
-                            items=[
-                                ft.PopupMenuItem(
-                                    content=ft.Row(
-                                        [
-                                            ft.Icon(ft.Icons.REMOVE, color=DANGER),
-                                            ft.Text("Remove"),
-                                        ]
-                                    ),
-                                    on_click=lambda e,
-                                    ar=action_ref,
-                                    t=detail_tile,
-                                    tr=tile_ref: (
-                                        self.confirm_remove_action(
-                                            e.control.page,
-                                            (
-                                                t
-                                                if t is not None
-                                                else getattr(tr, "current", None)
-                                            ),
-                                            ar.current,
-                                        )
-                                        if ar.current is not None
-                                        and (
-                                            t is not None
-                                            or getattr(tr, "current", None) is not None
-                                        )
-                                        else None
-                                    ),
-                                ),
-                            ],
+                    ft.IconButton(
+                        icon=ft.Icons.MORE_VERT,
+                        icon_color=TEXT_MUTED,
+                        icon_size=16,
+                        tooltip="Opsi",
+                        width=28,
+                        height=28,
+                        padding=ft.padding.all(0),
+                        style=ft.ButtonStyle(
+                            shape=ft.RoundedRectangleBorder(radius=6),
                         ),
+                        on_click=_do_open_action_menu,
                     ),
                 ],
-                spacing=4,
+                spacing=0,
                 alignment=ft.MainAxisAlignment.START,
                 vertical_alignment=ft.CrossAxisAlignment.CENTER,
             ),
         )
 
-    def _get_color(self, i):
-        return PRIMARY if i % 2 == 0 else SECONDARY
+    def _get_color(self, text, i):
+        """Get card accent color based on its issue text or fallback to DANGER red."""
+        try:
+            t = str(text or "").strip().upper()
+            if t == "PDT":
+                return SUCCESS
+            elif t == "TRL":
+                return WARNING
+            elif t in ("PROPOSE NEXT ACTION", "NEXT ACTION"):
+                return PRIMARY
+            else:
+                return DANGER
+        except Exception:
+            return DANGER
+
+    def _get_priority(self, text: str) -> int:
+        """Get card priority level based on text (0=Red, 1=Green, 2=Yellow, 3=Blue)."""
+        try:
+            t = str(text or "").strip().upper()
+            if t == "PDT":
+                return 1
+            elif t == "TRL":
+                return 2
+            elif t in ("PROPOSE NEXT ACTION", "NEXT ACTION"):
+                return 3
+            else:
+                return 0
+        except Exception:
+            return 0
+
+    def _get_card_priority(self, card: ft.Control) -> int:
+        """Get priority level of a card control."""
+        try:
+            txt = self._extract_issue_text(card)
+            return self._get_priority(txt)
+        except Exception:
+            return 0

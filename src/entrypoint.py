@@ -19,13 +19,17 @@ def _main(page: ft.Page) -> None:
     page.title = "Daily Report Dashboard"
     page.window.icon = "icon_windows.ico"
     # Use a small global padding so content doesn't hug the window edges.
-    page.padding = 8
-    page.theme = ft.Theme(font_family="Verdana")
+    page.padding = 10
+    # Inter is a modern, highly readable UI font. Falls back to Segoe UI on Windows.
+    page.fonts = {
+        "Pacifico": "Pacifico-Regular.ttf",
+        "Inter": "https://fonts.gstatic.com/s/inter/v13/UcCO3FwrK3iLTeHuS_fvQtMwCp50KnMw2boKoduKmMEVuLyfAZ9hiJ-Ek-_EeA.woff2",
+    }
+    page.theme = ft.Theme(font_family="Inter")
     page.theme_mode = ft.ThemeMode.LIGHT
     page.theme.page_transitions.windows = "cupertino"
-    page.fonts = {"Pacifico": "Pacifico-Regular.ttf"}
-    # Softer neutral background improves contrast and reduces visual noise.
-    page.bgcolor = ft.Colors.BLUE_GREY_50
+    # Slate-100 background — softer than white, less eye strain.
+    page.bgcolor = "#F1F5F9"
 
     ctx = build_context(page, logger_name="daily_report")
     dashboard = DashboardApp(page, ctx=ctx)
@@ -33,12 +37,39 @@ def _main(page: ft.Page) -> None:
 
     def _on_resize(_e=None):
         try:
+            if getattr(page.window, "minimized", False):
+                return
+            if page.width == 0 or page.height == 0:
+                return
             dashboard.apply_responsive_layout(getattr(page, "width", None))
         except Exception:
             pass
 
     # Keep the dashboard responsive.
     page.on_resize = safe_event(_on_resize, label="page.on_resize")
+
+    def _on_window_event(e):
+        try:
+            event_type = str(getattr(e, "data", "") or "").lower()
+            # Close any active card menu dialog before the window loses its render surface.
+            # This prevents the Flutter overlay route from hanging mid-animation,
+            # which causes the blank/white screen on Windows desktop.
+            if event_type in ("blur", "minimize"):
+                try:
+                    report_list = dashboard.report_editor.report_list
+                    report_list.close_active_menu()
+                except Exception:
+                    pass
+            # Force a repaint when the window comes back into focus or is restored.
+            if event_type in ("restore", "focus"):
+                page.update()
+        except Exception:
+            pass
+
+    try:
+        page.window.on_event = safe_event(_on_window_event, label="page.window.on_event")
+    except Exception:
+        pass
 
     def _on_disconnect(_e=None):
         try:

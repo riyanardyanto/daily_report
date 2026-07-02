@@ -17,6 +17,12 @@ from src.services.config_service import get_ui_config
 from src.services.history_db_adapter import read_last_saved_user_date_shift
 from src.services.spa_facade import SpaFacade, SpaRequest
 from src.utils.helpers import data_app_path
+from src.utils.theme import (
+    PRIMARY,
+    SURFACE,
+    TEXT_MUTED,
+    TEXT_SECONDARY,
+)
 from src.utils.ui_helpers import snack
 
 
@@ -115,6 +121,10 @@ class DashboardApp(ft.Container):
             get_link_up=self._get_link_up,
             get_func_location=self._get_func_location,
             get_date_field=self._get_date_field,
+            set_selected_shift=self._set_selected_shift,
+            set_link_up=self._set_link_up,
+            set_func_location=self._set_func_location,
+            set_date_field=self._set_date_field,
             on_history_saved=self._on_history_saved,
         )
 
@@ -131,45 +141,96 @@ class DashboardApp(ft.Container):
             padding=10,
         )
         # create if button get data is clicked in sidebar, then update the report content
-        self.sidebar.get_data_button.on_click = safe_event(
-            self.update_tables,
-            label="sidebar.get_data_button.on_click",
+        # get_data_button is a Container; the actual ElevatedButton is _get_data_inner_btn
+        _inner = getattr(self.sidebar, "_get_data_inner_btn", None)
+        if _inner is not None:
+            _inner.on_click = safe_event(
+                self.update_tables,
+                label="sidebar.get_data_button.on_click",
+            )
+        else:
+            # Fallback for older sidebar that exposes ElevatedButton directly
+            self.sidebar.get_data_button.on_click = safe_event(
+                self.update_tables,
+                label="sidebar.get_data_button.on_click",
+            )
+
+        # Wire dropdown changes to refresh last saved panel in report editor
+        self.sidebar.link_up.on_change = safe_event(
+            self._on_sidebar_dropdown_change,
+            label="sidebar.link_up.on_change",
         )
+        self.sidebar.func_location.on_change = safe_event(
+            self._on_sidebar_dropdown_change,
+            label="sidebar.func_location.on_change",
+        )
+
         # allow stops_table to push selected row details into report content via callback (already set on construction)
         self.progress_bar = ft.ProgressBar(
-            # bar_height=600,
-            height=12,
+            height=4,
             visible=False,
             expand=True,
+            color=PRIMARY,
+            bgcolor="#E0E7FF",
+            border_radius=ft.border_radius.all(4),
         )
 
         self.last_saved_info = ft.Text(
             "",
-            size=8,
-            color=ft.Colors.BLUE_GREY_700,
+            size=9,
+            color=TEXT_MUTED,
             italic=True,
             text_align=ft.TextAlign.RIGHT,
         )
 
-        self.status_bar = ft.Text("", size=11, color=ft.Colors.BLUE_GREY_700)
+        self.status_bar = ft.Text(
+            "", size=11, color=TEXT_SECONDARY, weight=ft.FontWeight.W_500
+        )
 
         header = ft.Container(
-            padding=ft.padding.symmetric(horizontal=10, vertical=10),
-            bgcolor=ft.Colors.WHITE,
-            border=ft.border.all(1, ft.Colors.BLACK12),
-            border_radius=10,
+            padding=ft.padding.symmetric(horizontal=16, vertical=12),
+            bgcolor=SURFACE,
+            border_radius=12,
+            shadow=ft.BoxShadow(
+                spread_radius=0,
+                blur_radius=10,
+                color="#0000000D",
+                offset=ft.Offset(0, 2),
+            ),
             content=ft.Row(
                 [
                     ft.Row(
                         [
-                            ft.Icon(ft.Icons.DASHBOARD_CUSTOMIZE, size=26),
-                            ft.Text(
-                                "Daily Report Dashboard",
-                                size=20,
-                                weight=ft.FontWeight.BOLD,
+                            ft.Container(
+                                content=ft.Icon(
+                                    ft.Icons.DASHBOARD_CUSTOMIZE_ROUNDED,
+                                    size=22,
+                                    color=SURFACE,
+                                ),
+                                bgcolor=PRIMARY,
+                                border_radius=10,
+                                padding=ft.padding.all(8),
+                            ),
+                            ft.Column(
+                                controls=[
+                                    ft.Text(
+                                        "Daily Report",
+                                        size=18,
+                                        weight=ft.FontWeight.BOLD,
+                                        color="#0F172A",
+                                    ),
+                                    ft.Text(
+                                        "Dashboard",
+                                        size=11,
+                                        color=TEXT_MUTED,
+                                        italic=True,
+                                    ),
+                                ],
+                                spacing=0,
+                                tight=True,
                             ),
                         ],
-                        spacing=8,
+                        spacing=12,
                         expand=False,
                         vertical_alignment=ft.CrossAxisAlignment.CENTER,
                     ),
@@ -177,7 +238,7 @@ class DashboardApp(ft.Container):
                         controls=[
                             ft.Container(
                                 content=self.progress_bar,
-                                width=220,
+                                width=180,
                             ),
                             ft.Column(
                                 controls=[
@@ -193,7 +254,7 @@ class DashboardApp(ft.Container):
                         expand=True,
                         alignment=ft.MainAxisAlignment.END,
                         vertical_alignment=ft.CrossAxisAlignment.CENTER,
-                        spacing=10,
+                        spacing=12,
                     ),
                 ],
                 expand=True,
@@ -328,6 +389,121 @@ class DashboardApp(ft.Container):
             return str(getattr(self.sidebar.date_field, "value", "") or "")
         except Exception:
             return ""
+
+    def _set_selected_shift(self, value: str) -> bool:
+        try:
+            control = getattr(getattr(self, "sidebar", None), "shift", None)
+            if control is None:
+                return False
+            incoming = str(value or "").strip()
+            if not incoming:
+                return False
+            option_values = [
+                str(getattr(opt, "key", None) or getattr(opt, "text", "") or "")
+                for opt in list(getattr(control, "options", None) or [])
+            ]
+            selected = incoming if incoming in option_values else None
+            if selected is None:
+                incoming_l = incoming.lower()
+                for opt in option_values:
+                    if str(opt).strip().lower() == incoming_l:
+                        selected = str(opt)
+                        break
+            if selected is None:
+                return False
+            control.value = selected
+            try:
+                control.update()
+            except Exception:
+                pass
+            return True
+        except Exception:
+            return False
+
+    def _set_link_up(self, value: str) -> bool:
+        try:
+            control = getattr(getattr(self, "sidebar", None), "link_up", None)
+            if control is None:
+                return False
+            incoming = str(value or "").strip()
+            if not incoming:
+                return False
+            option_values = [
+                str(getattr(opt, "key", None) or getattr(opt, "text", "") or "")
+                for opt in list(getattr(control, "options", None) or [])
+            ]
+            selected = incoming if incoming in option_values else None
+            if selected is None:
+                incoming_l = incoming.lower()
+                for opt in option_values:
+                    if str(opt).strip().lower() == incoming_l:
+                        selected = str(opt)
+                        break
+            if selected is None:
+                return False
+            control.value = selected
+            try:
+                control.update()
+            except Exception:
+                pass
+            try:
+                self._on_sidebar_dropdown_change(None)
+            except Exception:
+                pass
+            return True
+        except Exception:
+            return False
+
+    def _set_func_location(self, value: str) -> bool:
+        try:
+            control = getattr(getattr(self, "sidebar", None), "func_location", None)
+            if control is None:
+                return False
+            incoming = str(value or "").strip()
+            if not incoming:
+                return False
+            option_values = [
+                str(getattr(opt, "key", None) or getattr(opt, "text", "") or "")
+                for opt in list(getattr(control, "options", None) or [])
+            ]
+            selected = incoming if incoming in option_values else None
+            if selected is None:
+                incoming_l = incoming.lower()
+                for opt in option_values:
+                    if str(opt).strip().lower() == incoming_l:
+                        selected = str(opt)
+                        break
+            if selected is None:
+                return False
+            control.value = selected
+            try:
+                control.update()
+            except Exception:
+                pass
+            try:
+                self._on_sidebar_dropdown_change(None)
+            except Exception:
+                pass
+            return True
+        except Exception:
+            return False
+
+    def _set_date_field(self, value: str) -> bool:
+        try:
+            control = getattr(getattr(self, "sidebar", None), "date_field", None)
+            if control is None:
+                return False
+            incoming = str(value or "").strip()
+            if not incoming:
+                return False
+            control.value = incoming
+            try:
+                control.update()
+            except Exception:
+                pass
+            return True
+        except Exception:
+            return False
 
     def _get_metrics_table_text(self) -> str:
         """Return MetricsTable as tabulate text (for QR payload)."""
@@ -826,6 +1002,15 @@ class DashboardApp(ft.Container):
             except Exception:
                 pass
             raise
+
+    def _on_sidebar_dropdown_change(self, e):
+        """Refreshes the 'Data Terakhir Tersimpan' panel when sidebar dropdown values change."""
+        try:
+            page = self._resolve_page(e)
+            if getattr(self, "report_editor", None) is not None:
+                self.report_editor._refresh_last_saved_panel(page)
+        except Exception:
+            pass
 
     def on_stop_row_double(self, row: list):
         """Callback invoked when a stops-table row is double-clicked.

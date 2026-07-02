@@ -437,6 +437,42 @@ def append_history_rows(db_path: Path, rows: Iterable[dict[str, Any]]) -> int:
     return count
 
 
+def upsert_history_rows(
+    db_path: Path, rows: Iterable[dict[str, Any]], upsert_key: tuple[str, str, str, str]
+) -> tuple[int, int]:
+    """Upsert rows ke history database: if same key exists, replace it.
+
+    NOTE: db_path parameter diabaikan (compatibility).
+    Sekarang menggunakan local database + auto sync.
+
+    Args:
+        db_path: Path to SQLite database (ignored, for compatibility)
+        rows: Rows to upsert
+        upsert_key: Tuple of (link_up, func_location, date_field, shift) values to match on
+
+    Returns:
+        (deleted_count, inserted_count)
+    """
+    if _history_storage_mode() == "shared_sqlite":
+        from src.services.history_db_service import upsert_history_rows as _upsert
+
+        return _upsert(_resolve_db_path(db_path), rows, upsert_key)
+
+    service = _get_sync_service()
+    deleted_count, inserted_count = service.upsert_rows(rows, upsert_key)
+
+    # Auto sync ke shared folder jika enabled
+    if _auto_sync_enabled and inserted_count > 0:
+        try:
+            sync_file = service.export_to_sync_folder()
+            if sync_file:
+                print(f"[LocalSync] Exported to {sync_file.name}")
+        except Exception as e:
+            print(f"[LocalSync] Export error (ignored): {e}")
+
+    return deleted_count, inserted_count
+
+
 def read_history_tail(
     *,
     db_path: Path,
@@ -576,6 +612,326 @@ def read_last_saved_user_date_shift(
     return user, date_field, shift
 
 
+def read_last_save_cards(
+    db_path: Path,
+    *,
+    link_up: str | None = None,
+    func_location: str | None = None,
+) -> dict | None:
+    """Read all cards from the most recent save_id, optionally filtered.
+
+    Parameters:
+        db_path: Path to history DB (ignored in local_sync mode, kept for compat).
+        link_up: If given, only consider saves whose link_up matches (case-insensitive).
+        func_location: If given, only consider saves whose func_location matches
+            (case-insensitive, prefix match: e.g. "PACK" matches "Packer").
+
+    Returns a dict with keys:
+        - meta: dict with user, date_field, shift, link_up, func_location, saved_at
+        - cards: list of dicts, each with:
+            - issue: str
+            - details: list of dicts with 'text' and 'actions' (list[str])
+
+    Returns None if no matching history exists.
+    """
+    if _history_storage_mode() == "shared_sqlite":
+        from src.services.history_db_service import read_history_tail as _read
+
+        _fields, _total, rows = _read(db_path=_resolve_db_path(db_path), limit=9999)
+        if not rows:
+            return None
+    else:
+        service = _get_sync_service()
+        rows = service.get_all_rows()
+        if not rows:
+            return None
+
+    # Normalize filter values
+    lu_filter = str(link_up or "").strip().lower()
+    fl_filter = str(func_location or "").strip().lower()
+
+    # Apply filters at the row level before grouping by save_id
+    def _row_matches(r: dict[str, Any]) -> bool:
+        if lu_filter:
+            row_lu = str(r.get("link_up", "") or "").strip().lower()
+            if row_lu != lu_filter:
+                return False
+        if fl_filter:
+            row_fl = str(r.get("func_location", "") or "").strip().lower()
+            # Prefix match: "pack" matches "packer", "pack", etc.
+            if not (
+                row_fl == fl_filter
+                or row_fl.startswith(fl_filter)
+                or fl_filter.startswith(row_fl)
+            ):
+                return False
+        return True
+
+    filtered_rows = (
+        [r for r in rows if _row_matches(r)] if (lu_filter or fl_filter) else rows
+    )
+    if not filtered_rows:
+        return None
+
+    # Find most recent save_id within filtered rows by (saved_at, save_id)
+    def _meta_key(r: dict[str, Any]):
+        saved_at = str((r or {}).get("saved_at", "") or "")
+        save_id = str((r or {}).get("save_id", "") or "")
+        return (saved_at, save_id)
+
+    try:
+        last_row = max(filtered_rows, key=_meta_key)
+    except Exception:
+        last_row = filtered_rows[-1]
+
+    last_save_id = str((last_row or {}).get("save_id", "") or "")
+    if not last_save_id:
+        return None
+
+    # Filter only rows belonging to this save_id (from all rows, not just filtered,
+    # because a save is atomic — all rows share the same link_up/func_location anyway)
+    save_rows = [r for r in rows if str(r.get("save_id", "") or "") == last_save_id]
+
+    # Build meta
+    meta = {
+        "user": str((last_row or {}).get("user", "") or ""),
+        "date_field": str((last_row or {}).get("date_field", "") or ""),
+        "shift": str((last_row or {}).get("shift", "") or ""),
+        "link_up": str((last_row or {}).get("link_up", "") or ""),
+        "func_location": str((last_row or {}).get("func_location", "") or ""),
+        "saved_at": str((last_row or {}).get("saved_at", "") or ""),
+    }
+
+    # Group rows by card_index -> detail_index -> actions
+    # card_index, detail_index, action_index are stored as strings
+    cards_dict: dict[int, dict] = {}
+    for r in save_rows:
+        try:
+            ci = int(str(r.get("card_index", "0") or "0").strip() or "0")
+        except Exception:
+            ci = 0
+
+        if ci not in cards_dict:
+            cards_dict[ci] = {
+                "issue": str(r.get("issue", "") or ""),
+                "details_dict": {},
+            }
+
+        try:
+            di = int(str(r.get("detail_index", "0") or "0").strip() or "0")
+        except Exception:
+            di = 0
+
+        if di == 0:
+            continue
+
+        details_dict = cards_dict[ci]["details_dict"]
+        if di not in details_dict:
+            details_dict[di] = {
+                "text": str(r.get("detail", "") or ""),
+                "actions": {},
+            }
+
+        try:
+            ai = int(str(r.get("action_index", "0") or "0").strip() or "0")
+        except Exception:
+            ai = 0
+
+        if ai == 0:
+            continue
+
+        details_dict[di]["actions"][ai] = str(r.get("action", "") or "")
+
+    # Convert to sorted lists
+    cards_list = []
+    for ci in sorted(cards_dict.keys()):
+        card_data = cards_dict[ci]
+        details_list = []
+        for di in sorted(card_data["details_dict"].keys()):
+            detail_data = card_data["details_dict"][di]
+            actions_list = [
+                detail_data["actions"][ai]
+                for ai in sorted(detail_data["actions"].keys())
+            ]
+            details_list.append({"text": detail_data["text"], "actions": actions_list})
+        cards_list.append({"issue": card_data["issue"], "details": details_list})
+
+    return {"meta": meta, "cards": cards_list}
+
+
+def read_all_save_ids_filtered(
+    db_path: Path,
+    *,
+    link_up: str | None = None,
+    func_location: str | None = None,
+) -> list[tuple[str, str]]:
+    """Get all unique save_ids and their saved_at timestamps, optionally filtered.
+
+    Parameters:
+        db_path: Path to history DB (ignored in local_sync mode, kept for compat).
+        link_up: If given, only consider saves whose link_up matches (case-insensitive).
+        func_location: If given, only consider saves whose func_location matches
+            (case-insensitive, prefix match).
+
+    Returns:
+        List of tuples (save_id, saved_at) sorted by saved_at descending (newest first).
+        Empty list if no matches.
+    """
+    if _history_storage_mode() == "shared_sqlite":
+        from src.services.history_db_service import read_history_tail as _read
+
+        _fields, _total, rows = _read(db_path=_resolve_db_path(db_path), limit=9999)
+    else:
+        service = _get_sync_service()
+        rows = service.get_all_rows()
+
+    if not rows:
+        return []
+
+    # Normalize filter values
+    lu_filter = str(link_up or "").strip().lower()
+    fl_filter = str(func_location or "").strip().lower()
+
+    # Apply filters
+    def _row_matches(r: dict[str, Any]) -> bool:
+        if lu_filter:
+            row_lu = str(r.get("link_up", "") or "").strip().lower()
+            if row_lu != lu_filter:
+                return False
+        if fl_filter:
+            row_fl = str(r.get("func_location", "") or "").strip().lower()
+            if not (
+                row_fl == fl_filter
+                or row_fl.startswith(fl_filter)
+                or fl_filter.startswith(row_fl)
+            ):
+                return False
+        return True
+
+    filtered_rows = (
+        [r for r in rows if _row_matches(r)] if (lu_filter or fl_filter) else rows
+    )
+    if not filtered_rows:
+        return []
+
+    # Group by save_id and get unique (save_id, saved_at) pairs
+    seen_saves: dict[str, str] = {}
+    for r in filtered_rows:
+        save_id = str(r.get("save_id", "") or "")
+        saved_at = str(r.get("saved_at", "") or "")
+        if save_id and save_id not in seen_saves:
+            seen_saves[save_id] = saved_at
+
+    # Sort by saved_at descending (newest first)
+    result = sorted(
+        [(save_id, saved_at) for save_id, saved_at in seen_saves.items()],
+        key=lambda x: x[1],
+        reverse=True,
+    )
+    return result
+
+
+def read_save_cards_by_id(
+    db_path: Path,
+    save_id: str,
+) -> dict | None:
+    """Read all cards for a specific save_id.
+
+    Parameters:
+        db_path: Path to history DB (ignored in local_sync mode, kept for compat).
+        save_id: The specific save_id to fetch.
+
+    Returns a dict with keys:
+        - meta: dict with user, date_field, shift, link_up, func_location, saved_at
+        - cards: list of dicts
+
+    Returns None if save_id not found.
+    """
+    if _history_storage_mode() == "shared_sqlite":
+        from src.services.history_db_service import read_history_tail as _read
+
+        _fields, _total, rows = _read(db_path=_resolve_db_path(db_path), limit=9999)
+    else:
+        service = _get_sync_service()
+        rows = service.get_all_rows()
+
+    if not rows:
+        return None
+
+    # Filter rows by save_id
+    save_rows = [r for r in rows if str(r.get("save_id", "") or "") == save_id]
+    if not save_rows:
+        return None
+
+    # Use first row to get metadata (all rows in a save share same metadata)
+    last_row = save_rows[0]
+
+    # Build meta
+    meta = {
+        "user": str((last_row or {}).get("user", "") or ""),
+        "date_field": str((last_row or {}).get("date_field", "") or ""),
+        "shift": str((last_row or {}).get("shift", "") or ""),
+        "link_up": str((last_row or {}).get("link_up", "") or ""),
+        "func_location": str((last_row or {}).get("func_location", "") or ""),
+        "saved_at": str((last_row or {}).get("saved_at", "") or ""),
+    }
+
+    # Group rows by card_index -> detail_index -> actions (same as read_last_save_cards)
+    cards_dict: dict[int, dict] = {}
+    for r in save_rows:
+        try:
+            ci = int(str(r.get("card_index", "0") or "0").strip() or "0")
+        except Exception:
+            ci = 0
+
+        if ci not in cards_dict:
+            cards_dict[ci] = {
+                "issue": str(r.get("issue", "") or ""),
+                "details_dict": {},
+            }
+
+        try:
+            di = int(str(r.get("detail_index", "0") or "0").strip() or "0")
+        except Exception:
+            di = 0
+
+        if di == 0:
+            continue
+
+        details_dict = cards_dict[ci]["details_dict"]
+        if di not in details_dict:
+            details_dict[di] = {
+                "text": str(r.get("detail", "") or ""),
+                "actions": {},
+            }
+
+        try:
+            ai = int(str(r.get("action_index", "0") or "0").strip() or "0")
+        except Exception:
+            ai = 0
+
+        if ai == 0:
+            continue
+
+        details_dict[di]["actions"][ai] = str(r.get("action", "") or "")
+
+    # Convert to sorted lists
+    cards_list = []
+    for ci in sorted(cards_dict.keys()):
+        card_data = cards_dict[ci]
+        details_list = []
+        for di in sorted(card_data["details_dict"].keys()):
+            detail_data = card_data["details_dict"][di]
+            actions_list = [
+                detail_data["actions"][ai]
+                for ai in sorted(detail_data["actions"].keys())
+            ]
+            details_list.append({"text": detail_data["text"], "actions": actions_list})
+        cards_list.append({"issue": card_data["issue"], "details": details_list})
+
+    return {"meta": meta, "cards": cards_list}
+
+
 def export_history_db_to_csv(
     *,
     db_path: Path,
@@ -643,7 +999,10 @@ def save_report_history_sqlite(
     date_field: str = "",
     user: str = "",
 ) -> tuple[bool, str]:
-    """Save report snapshot into the Local+Sync history store.
+    """Save report snapshot into the Local+Sync history store with upsert logic.
+
+    If a report with same (link_up, func_location, date_field, shift) already exists,
+    it will be replaced with the new data.
 
     Matches the behavior/signature of history_db_service.save_report_history_sqlite.
     """
@@ -668,21 +1027,36 @@ def save_report_history_sqlite(
     save_id = str(uuid.uuid4())
     saved_at = datetime.now().isoformat(timespec="seconds")
 
+    # Normalize parameters
+    link_up_norm = str(link_up or "").strip() or "LU22"
+    func_location_norm = str(func_location or "").strip() or "Packer"
+    date_field_norm = str(date_field or "").strip()
+    shift_norm = str(shift or "").strip() or "Shift 1"
+    user_norm = str(user or "").strip()
+
     rows = build_history_rows(
         cards=cards,
         extract_issue=extract_issue,
         extract_details=extract_details,
         save_id=save_id,
         saved_at=saved_at,
-        link_up=str(link_up or "").strip(),
-        func_location=str(func_location or "").strip(),
-        date_field=str(date_field or "").strip(),
-        shift=str(shift or "").strip() or "Shift 1",
-        user=str(user or "").strip(),
+        link_up=link_up_norm,
+        func_location=func_location_norm,
+        date_field=date_field_norm,
+        shift=shift_norm,
+        user=user_norm,
     )
 
     try:
-        appended = append_history_rows(db_path, rows)
-        return True, f"Report saved (local cache) (+{appended} rows)"
+        upsert_key = (link_up_norm, func_location_norm, date_field_norm, shift_norm)
+        deleted_count, inserted_count = upsert_history_rows(db_path, rows, upsert_key)
+
+        if deleted_count > 0:
+            return (
+                True,
+                f"Report updated (local cache) (-{deleted_count} old rows, +{inserted_count} new rows)",
+            )
+        else:
+            return True, f"Report saved (local cache) (+{inserted_count} rows)"
     except Exception as ex:
         return False, f"Failed to save report to local history: {ex}"

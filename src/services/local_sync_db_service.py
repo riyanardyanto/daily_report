@@ -96,6 +96,56 @@ class LocalSyncDbService:
         finally:
             conn.close()
 
+    def upsert_rows(
+        self, rows: Iterable[dict[str, Any]], upsert_key: tuple[str, str, str, str]
+    ) -> tuple[int, int]:
+        """Upsert rows: if same (link_up, func_location, date_field, shift) exists, replace it.
+
+        Args:
+            rows: Rows to upsert
+            upsert_key: Tuple of (link_up, func_location, date_field, shift) values to match on
+
+        Returns:
+            (deleted_count, inserted_count)
+        """
+        rows_list = list(rows)
+        if not rows_list:
+            return 0, 0
+
+        link_up, func_location, date_field, shift = upsert_key
+
+        conn = sqlite3.connect(self.local_db_path)
+        try:
+            cols = ",".join(HISTORY_FIELDNAMES)
+            placeholders = ",".join(["?"] * len(HISTORY_FIELDNAMES))
+
+            values = []
+            for r in rows_list:
+                values.append(
+                    tuple(str(r.get(c, "") or "") for c in HISTORY_FIELDNAMES)
+                )
+
+            # Delete existing rows matching the upsert key
+            deleted_count = conn.execute(
+                """
+                DELETE FROM history_rows
+                WHERE link_up = ? AND func_location = ? AND date_field = ? AND shift = ?
+                """,
+                (link_up, func_location, date_field, shift),
+            ).rowcount
+
+            # Insert new rows
+            conn.executemany(
+                f"INSERT INTO history_rows ({cols}) VALUES ({placeholders})",
+                values,
+            )
+            inserted_count = len(rows_list)
+
+            conn.commit()
+            return deleted_count, inserted_count
+        finally:
+            conn.close()
+
     def _import_index_path(self) -> Path:
         # Per-machine local marker file for which sync files have been imported.
         return self.local_db_path.parent / "sync_import_index.json"

@@ -1,6 +1,12 @@
 import flet as ft
 
-from src.utils.theme import SWITCH_ACTIVE
+from src.utils.theme import (
+    SURFACE,
+    SWITCH_ACTIVE,
+    TABLE_HEADER_BG,
+    TABLE_HEADER_TEXT,
+    TEXT_SECONDARY,
+)
 
 
 class StopsTable(ft.Container):
@@ -27,27 +33,29 @@ class StopsTable(ft.Container):
         # build the DataTable (headers centered for Target/Actual and numeric cells centered)
         table = ft.DataTable(
             columns=[
-                ft.DataColumn(ft.Text("Line", size=12, weight=ft.FontWeight.W_600)),
                 ft.DataColumn(
-                    ft.Text("Issue", size=12, weight=ft.FontWeight.W_600),
+                    ft.Text("Line", size=12, weight=ft.FontWeight.W_600, color=TABLE_HEADER_TEXT)
+                ),
+                ft.DataColumn(
+                    ft.Text("Issue", size=12, weight=ft.FontWeight.W_600, color=TABLE_HEADER_TEXT),
                     heading_row_alignment=ft.MainAxisAlignment.CENTER,
                 ),
                 ft.DataColumn(
-                    ft.Text("Stops", size=12, weight=ft.FontWeight.W_600),
+                    ft.Text("Stops", size=12, weight=ft.FontWeight.W_600, color=TABLE_HEADER_TEXT),
                     heading_row_alignment=ft.MainAxisAlignment.CENTER,
                 ),
                 ft.DataColumn(
-                    ft.Text("Dt[min]", size=12, weight=ft.FontWeight.W_600),
+                    ft.Text("Dt[min]", size=12, weight=ft.FontWeight.W_600, color=TABLE_HEADER_TEXT),
                     heading_row_alignment=ft.MainAxisAlignment.CENTER,
                 ),
             ],
-            border=ft.border.all(1, ft.Colors.BLACK12),
-            heading_row_color=ft.Colors.BLUE_GREY_50,
+            border=ft.border.all(1, "#E2E8F0"),
+            heading_row_color=TABLE_HEADER_BG,
             data_row_max_height=40,
             data_row_min_height=22,
             heading_row_height=34,
-            vertical_lines=ft.BorderSide(1, ft.Colors.BLACK12),
-            horizontal_lines=ft.BorderSide(1, ft.Colors.BLACK12),
+            vertical_lines=ft.BorderSide(1, "#E2E8F0"),
+            horizontal_lines=ft.BorderSide(1, "#E2E8F0"),
         )
         self._table = table
 
@@ -68,7 +76,12 @@ class StopsTable(ft.Container):
             [
                 ft.Row(
                     controls=[
-                        ft.Text("Stop Details", size=12, weight=ft.FontWeight.W_600),
+                        ft.Text(
+                            "Stop Details",
+                            size=13,
+                            weight=ft.FontWeight.BOLD,
+                            color=TEXT_SECONDARY,
+                        ),
                         self.include_line_stop_switch,
                     ],
                     spacing=10,
@@ -85,10 +98,15 @@ class StopsTable(ft.Container):
             content=content,
             width=width,
             expand=True,
-            bgcolor=ft.Colors.WHITE,
-            padding=ft.padding.all(10),
-            border=ft.border.all(1, ft.Colors.BLACK12),
-            border_radius=10,
+            bgcolor=SURFACE,
+            padding=ft.padding.all(12),
+            border_radius=12,
+            shadow=ft.BoxShadow(
+                spread_radius=0,
+                blur_radius=8,
+                color="#0000000D",
+                offset=ft.Offset(0, 2),
+            ),
         )
 
     def set_rows(self, rows: list[tuple[str, str, str, str]]):

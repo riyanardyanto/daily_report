@@ -10,7 +10,7 @@ from collections import OrderedDict
 import flet as ft
 
 from src.services.config_service import get_ui_config
-from src.utils.theme import DANGER, ON_COLOR
+from src.utils.theme import DANGER, ON_COLOR, PRIMARY, SURFACE
 from src.utils.ui_helpers import open_dialog
 
 _QR_CACHE_LOCK = threading.Lock()
@@ -115,7 +115,24 @@ class QrCodeDialog:
 
         dlg = ft.AlertDialog(
             modal=True,
-            title=ft.Text(self.title),
+            title=ft.Row(
+                controls=[
+                    ft.Container(
+                        content=ft.Icon(ft.Icons.QR_CODE_ROUNDED, size=18, color=ON_COLOR),
+                        bgcolor=PRIMARY,
+                        border_radius=8,
+                        padding=ft.padding.all(6),
+                    ),
+                    ft.Text(
+                        self.title,
+                        size=15,
+                        weight=ft.FontWeight.BOLD,
+                        color="#0F172A",
+                    ),
+                ],
+                spacing=10,
+                vertical_alignment=ft.CrossAxisAlignment.CENTER,
+            ),
             content=ft.Container(
                 content=ft.Stack(
                     controls=[
@@ -125,19 +142,29 @@ class QrCodeDialog:
                     expand=True,
                 ),
                 alignment=ft.alignment.center,
-                padding=ft.padding.all(12),
-                bgcolor=ft.Colors.WHITE,
-                border=ft.border.all(1, ft.Colors.BLACK12),
-                border_radius=10,
+                padding=ft.padding.all(16),
+                bgcolor=SURFACE,
+                border=ft.border.all(1, "#E2E8F0"),
+                border_radius=16,
             ),
             actions=[
                 ft.Row(
                     controls=[
                         ft.ElevatedButton(
-                            "Close",
+                            content=ft.Row(
+                                controls=[
+                                    ft.Icon(ft.Icons.CLOSE_ROUNDED, size=14, color=ON_COLOR),
+                                    ft.Text("Tutup", size=12, color=ON_COLOR),
+                                ],
+                                spacing=6,
+                                tight=True,
+                            ),
                             on_click=_close_dialog,
-                            color=ON_COLOR,
                             bgcolor=DANGER,
+                            style=ft.ButtonStyle(
+                                shape=ft.RoundedRectangleBorder(radius=20),
+                                padding=ft.padding.symmetric(horizontal=16, vertical=10),
+                            ),
                         )
                     ],
                     alignment=ft.MainAxisAlignment.END,
@@ -145,6 +172,7 @@ class QrCodeDialog:
             ],
             actions_alignment=ft.MainAxisAlignment.END,
             on_dismiss=lambda _e: _close_dialog(),
+            shape=ft.RoundedRectangleBorder(radius=20),
         )
 
         open_dialog(page, dlg)

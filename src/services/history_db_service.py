@@ -216,6 +216,77 @@ def append_history_rows(db_path: Path, rows: Iterable[dict[str, Any]]) -> int:
     return len(normalized)
 
 
+def upsert_history_rows(
+    db_path: Path, rows: Iterable[dict[str, Any]], upsert_key: tuple[str, str, str, str]
+) -> tuple[int, int]:
+    """Upsert report rows: if same (link_up, func_location, date_field, shift) exists, replace it.
+
+    Args:
+        db_path: Path to SQLite database
+        rows: Rows to upsert
+        upsert_key: Tuple of (link_up, func_location, date_field, shift) values to match on
+
+    Returns:
+        (deleted_count, inserted_count)
+    """
+    ensure_history_db(db_path)
+
+    normalized = [_normalize_row(r) for r in rows]
+    if not normalized:
+        return 0, 0
+
+    link_up, func_location, date_field, shift = upsert_key
+
+    cols = ",".join(HISTORY_FIELDNAMES)
+    placeholders = ",".join(["?"] * len(HISTORY_FIELDNAMES))
+    values = [tuple(r[c] for c in HISTORY_FIELDNAMES) for r in normalized]
+
+    deleted_count = 0
+    inserted_count = 0
+
+    with _connect(db_path, for_write=True) as conn:
+        conn.execute("BEGIN")
+        try:
+            # Delete existing rows matching the upsert key
+            deleted_count = conn.execute(
+                """
+                DELETE FROM history_rows
+                WHERE link_up = ? AND func_location = ? AND date_field = ? AND shift = ?
+                """,
+                (link_up, func_location, date_field, shift),
+            ).rowcount
+
+            # Insert new rows
+            conn.executemany(
+                f"INSERT INTO history_rows ({cols}) VALUES ({placeholders})",
+                values,
+            )
+            inserted_count = len(normalized)
+
+            conn.commit()
+
+            # Keep a best-effort backup after a successful commit.
+            try:
+                ok_row = conn.execute("PRAGMA quick_check(1)").fetchone()
+                ok = bool(ok_row and str(ok_row[0] or "").strip().lower() == "ok")
+            except Exception:
+                ok = False
+
+            if ok:
+                try:
+                    bak_path = _history_backup_path(db_path)
+                    bak_path.parent.mkdir(parents=True, exist_ok=True)
+                    with sqlite3.connect(bak_path) as dst:
+                        conn.backup(dst)
+                except Exception:
+                    pass
+        except Exception:
+            conn.rollback()
+            raise
+
+    return deleted_count, inserted_count
+
+
 def save_report_history_sqlite(
     *,
     db_path: Path,
@@ -228,7 +299,10 @@ def save_report_history_sqlite(
     date_field: str = "",
     user: str = "",
 ) -> tuple[bool, str]:
-    """Save report snapshot into SQLite.
+    """Save report snapshot into SQLite with upsert logic.
+
+    If a report with same (link_up, func_location, date_field, shift) already exists,
+    it will be replaced with the new data.
 
     Returns:
         (ok, message)
@@ -244,22 +318,37 @@ def save_report_history_sqlite(
     save_id = str(uuid.uuid4())
     saved_at = datetime.now().isoformat(timespec="seconds")
 
+    # Normalize parameters
+    link_up_norm = str(link_up or "").strip() or "LU22"
+    func_location_norm = str(func_location or "").strip() or "Packer"
+    date_field_norm = str(date_field or "").strip()
+    shift_norm = str(shift or "").strip() or "Shift 1"
+    user_norm = str(user or "").strip()
+
     rows = build_history_rows(
         cards=cards,
         extract_issue=extract_issue,
         extract_details=extract_details,
         save_id=save_id,
         saved_at=saved_at,
-        link_up=str(link_up or "").strip(),
-        func_location=str(func_location or "").strip(),
-        date_field=str(date_field or "").strip(),
-        shift=str(shift or "").strip() or "Shift 1",
-        user=str(user or "").strip(),
+        link_up=link_up_norm,
+        func_location=func_location_norm,
+        date_field=date_field_norm,
+        shift=shift_norm,
+        user=user_norm,
     )
 
     try:
-        appended = append_history_rows(db_path, rows)
-        return True, f"Report saved: {db_path} (+{appended} rows)"
+        upsert_key = (link_up_norm, func_location_norm, date_field_norm, shift_norm)
+        deleted_count, inserted_count = upsert_history_rows(db_path, rows, upsert_key)
+
+        if deleted_count > 0:
+            return (
+                True,
+                f"Report updated: {db_path} (-{deleted_count} old rows, +{inserted_count} new rows)",
+            )
+        else:
+            return True, f"Report saved: {db_path} (+{inserted_count} rows)"
     except Exception as ex:
         return False, f"Failed to save report to SQLite: {ex}"
 
